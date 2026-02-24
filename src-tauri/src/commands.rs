@@ -143,7 +143,6 @@ async fn process_item(item: MemoryItem, db: Arc<Mutex<DbManager>>, app: AppHandl
              return Err("Downloaded zip missing".to_string());
         }
     } else {
-    } else {
          let ext = current_item.extension.as_deref().unwrap_or_else(|| {
              let url = current_item.download_url.to_lowercase();
              if url.contains(".mp4") || url.contains(".mov") || url.contains("video") { "mp4" } else { "jpg" }
@@ -155,7 +154,7 @@ async fn process_item(item: MemoryItem, db: Arc<Mutex<DbManager>>, app: AppHandl
 
     // 3. Combine
     let final_file = if current_item.state == ProcessingState::Extracted {
-        let (main_path, overlay_path) = extracted_files;
+        let (main_path, overlay_path) = extracted_files.clone();
         let ext = current_item.extension.as_deref().unwrap_or_else(|| {
              let url = current_item.download_url.to_lowercase();
              if url.contains(".mp4") || url.contains(".mov") || url.contains("video") { "mp4" } else { "jpg" }
@@ -165,12 +164,15 @@ async fn process_item(item: MemoryItem, db: Arc<Mutex<DbManager>>, app: AppHandl
 
         if let Some(overlay) = overlay_path {
             if is_video_ext(ext) {
-                let ffmpeg = tauri::async_runtime::spawn_blocking(move || {
-                    let ffmpeg_exe = sidecars::get_ffmpeg_path().expect("FFmpeg sidecar missing");
-                    sidecars::overlay_video_ffmpeg(&ffmpeg_exe, &main_path, &overlay, &combined_dest)
-                }).await.map_err(|e| e.to_string())??;
+                if let Err(e) = combiner::combine_video(&app, &main_path, &overlay, &combined_dest).await {
+                    update_state!(ProcessingState::Failed, Some(e.clone()));
+                    return Err(e);
+                }
             } else {
-                let _ = sidecars::overlay_image_rust(&main_path, &overlay, &combined_dest)?;
+                if let Err(e) = combiner::combine_image(&main_path, &overlay, &combined_dest).await {
+                    update_state!(ProcessingState::Failed, Some(e.clone()));
+                    return Err(e);
+                }
             }
         } else {
             let _ = tokio::fs::copy(main_path, &combined_dest).await;
