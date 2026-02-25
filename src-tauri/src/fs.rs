@@ -1,4 +1,4 @@
-use crate::db::DbManager;
+use crate::db::MemoryRepository;
 use crate::models::{MemoryItem, ProcessingState};
 use std::fs::File;
 use std::io::Read;
@@ -40,7 +40,7 @@ pub fn extract_json_from_zip(zip_path: &Path) -> Result<(String, PathBuf), Strin
 /// matching files are already present downloaded from Snapchat's new export system.
 pub fn hydrate_state_from_folder(
     memories_dir: &Path,
-    db: &DbManager,
+    db: &impl MemoryRepository,
     items: &[MemoryItem],
 ) -> Result<(), String> {
     if !memories_dir.exists() {

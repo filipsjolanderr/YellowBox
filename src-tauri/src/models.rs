@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+use strum_macros::{AsRefStr, Display, EnumString};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Display, EnumString, AsRefStr)]
 pub enum ProcessingState {
     Pending,
     Downloaded,
@@ -8,31 +10,6 @@ pub enum ProcessingState {
     Combined,
     Completed,
     Failed,
-}
-
-impl ProcessingState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ProcessingState::Pending => "Pending",
-            ProcessingState::Downloaded => "Downloaded",
-            ProcessingState::Extracted => "Extracted",
-            ProcessingState::Combined => "Combined",
-            ProcessingState::Completed => "Completed",
-            ProcessingState::Failed => "Failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "Pending" => ProcessingState::Pending,
-            "Downloaded" => ProcessingState::Downloaded,
-            "Extracted" => ProcessingState::Extracted,
-            "Combined" => ProcessingState::Combined,
-            "Completed" => ProcessingState::Completed,
-            "Failed" => ProcessingState::Failed,
-            _ => ProcessingState::Pending,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

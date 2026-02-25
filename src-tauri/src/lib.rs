@@ -3,10 +3,12 @@ pub mod combiner;
 pub mod commands;
 pub mod db;
 pub mod downloader;
+pub mod error;
 pub mod extractor;
 pub mod fs;
 pub mod metadata;
 pub mod models;
+pub mod pipeline;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
