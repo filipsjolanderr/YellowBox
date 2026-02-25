@@ -14,6 +14,8 @@ export interface ParsedMemory {
     state: string; // Dynamic mapping in Svelte vs Rust "Pending" | "Downloaded" | "Extracted" | "Combined" | "Completed" | "Failed"
     errorMessage?: string;
     extension?: string;
+    hasOverlay: boolean;
+    mediaType: "Image" | "Video";
 }
 
 /**
@@ -39,7 +41,9 @@ export function parseMemoriesJson(jsonContent: string): ParsedMemory[] {
                 downloadUrl: mem["Media Download Url"] || mem["Download Link"], // fallback if missing
                 originalDate: mem["Date"],
                 location: mem["Location"],
-                state: "Pending" // Initial state before checking processing status
+                state: "Pending", // Initial state before checking processing status
+                hasOverlay: false,
+                mediaType: mem["Media Type"]
             };
         });
 

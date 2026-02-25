@@ -45,4 +45,6 @@ pub struct MemoryItem {
     pub state: ProcessingState,
     pub error_message: Option<String>,
     pub extension: Option<String>,
+    pub has_overlay: bool,
+    pub media_type: String,
 }

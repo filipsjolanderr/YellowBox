@@ -27,6 +27,7 @@
     Video,
     Image as ImageIcon,
     CircleAlert,
+    Archive,
   } from "lucide-svelte";
 
   let selectedZip = $state<string | null>(null);
@@ -198,14 +199,11 @@
     }
   }
 
-  function lazyLoadVideo(node: HTMLVideoElement) {
-    const dataSrc = node.getAttribute("data-src");
-    if (!dataSrc) return;
-
+  function lazyLoadVideo(node: HTMLVideoElement, src: string) {
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) {
-          node.src = dataSrc;
+        if (entries[0].isIntersecting && src) {
+          node.src = src;
           node.load();
           observer.unobserve(node);
         }
@@ -213,8 +211,19 @@
       { rootMargin: "200px" },
     );
 
-    observer.observe(node);
+    if (src) observer.observe(node);
+
     return {
+      update(newSrc: string) {
+        if (newSrc !== src) {
+          src = newSrc;
+          // Only update immediately if already intersecting/showing
+          if (node.src) {
+            node.src = newSrc;
+            node.load();
+          }
+        }
+      },
       destroy() {
         observer.unobserve(node);
       },
@@ -248,10 +257,23 @@
       .replace(/ /g, "_");
     const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
     const filename = `${cleanDate}_${memory.id}.${ext}`;
-    return convertFileSrc(`${selectedOutput}/${filename}`);
+    const uri = convertFileSrc(`${selectedOutput}/${filename}`);
+    return uri;
+  }
+
+  function getLocalMainSrc(memory: ParsedMemory) {
+    if (!selectedOutput) return "";
+    const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
+    return convertFileSrc(`${selectedOutput}/${memory.id}-main.${ext}`);
+  }
+
+  function getOverlaySrc(memory: ParsedMemory) {
+    if (!selectedOutput) return "";
+    return convertFileSrc(`${selectedOutput}/${memory.id}-overlay.png`);
   }
 
   function isMaybeVideo(memory: ParsedMemory) {
+    if (memory.mediaType === "Video") return true;
     if (memory.extension) {
       return ["mp4", "mov"].includes(memory.extension.toLowerCase());
     }
@@ -349,17 +371,26 @@
           {#each memories as memory}
             {@const isDone =
               memory.state === "Completed" || memory.state === "Combined"}
+            {@const isExtracted = memory.state === "Extracted"}
+            {@const isZip =
+              memory.extension === "zip" ||
+              (!memory.extension &&
+                memory.downloadUrl.toLowerCase().includes(".zip"))}
             <Card
               class="group relative overflow-hidden transition-all hover:border-primary/50 hover:shadow-sm rounded-[4px] border border-border/50 p-0"
             >
               <!-- Visual Preview Placeholder -->
               <div class="aspect-[9/16] bg-black/5 relative overflow-hidden">
                 {#if isMaybeVideo(memory)}
+                  {@const videoSrc = isDone
+                    ? getFinalSrc(memory)
+                    : isExtracted
+                      ? getLocalMainSrc(memory)
+                      : isZip
+                        ? ""
+                        : `${memory.downloadUrl}#t=0.5`}
                   <video
-                    data-src={isDone
-                      ? getFinalSrc(memory)
-                      : `${memory.downloadUrl}#t=0.5`}
-                    use:lazyLoadVideo
+                    use:lazyLoadVideo={videoSrc}
                     class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {isDone
                       ? 'opacity-100 grayscale-0 z-10'
                       : 'opacity-0 grayscale group-hover:grayscale-0'}"
@@ -367,7 +398,7 @@
                     muted
                     playsinline
                     onloadeddata={(e) => {
-                      const vid = e.currentTarget;
+                      const vid = e.currentTarget as HTMLVideoElement;
                       if (!isDone) {
                         vid.classList.remove("opacity-0");
                         vid.classList.add(
@@ -383,10 +414,19 @@
                     }}
                     onerror={(e) => {
                       const vid = e.currentTarget as HTMLVideoElement;
-                      // Retry without timestamp if failed
+                      // Retry without timestamp or fallback to remote
                       if (vid.src.includes("#t=")) {
-                        vid.src =
-                          vid.getAttribute("data-src")?.split("#")[0] || "";
+                        vid.src = vid.src.split("#")[0];
+                        vid.load();
+                      } else if (
+                        (isDone || isExtracted) &&
+                        vid.src !== memory.downloadUrl
+                      ) {
+                        console.warn(
+                          `Local video failed for ${memory.id}, falling back to remote`,
+                        );
+                        vid.src = `${memory.downloadUrl}#t=0.5`;
+                        vid.load();
                       } else {
                         vid.style.display = "none";
                       }
@@ -394,7 +434,13 @@
                   ></video>
                 {:else}
                   <img
-                    src={isDone ? getFinalSrc(memory) : memory.downloadUrl}
+                    src={isDone
+                      ? getFinalSrc(memory)
+                      : isExtracted
+                        ? getLocalMainSrc(memory)
+                        : isZip
+                          ? ""
+                          : memory.downloadUrl}
                     alt="Memory"
                     class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {isDone
                       ? 'opacity-100 grayscale-0 z-10'
@@ -415,6 +461,44 @@
                         ).style.opacity = "0";
                       }
                     }}
+                    onerror={(e) => {
+                      const img = e.currentTarget as HTMLImageElement;
+                      if (
+                        (isDone || isExtracted) &&
+                        img.src !== memory.downloadUrl
+                      ) {
+                        console.warn(
+                          `Local image failed for ${memory.id}, falling back to remote`,
+                        );
+                        img.src = memory.downloadUrl;
+                      } else {
+                        img.style.display = "none";
+                      }
+                    }}
+                  />
+                {/if}
+
+                <!-- Zip Placeholder -->
+                {#if isZip && !isExtracted && !isDone}
+                  <div
+                    class="absolute inset-0 flex flex-col items-center justify-center bg-muted/20 z-0"
+                  >
+                    <Archive
+                      class="h-6 w-6 text-muted-foreground/30 animate-pulse"
+                    />
+                    <span
+                      class="mt-2 text-[8px] uppercase tracking-widest text-muted-foreground/40 font-bold"
+                      >Zip Bundle</span
+                    >
+                  </div>
+                {/if}
+
+                <!-- Overlay Preview (for Extracted state) -->
+                {#if isExtracted && memory.hasOverlay}
+                  <img
+                    src={getOverlaySrc(memory)}
+                    alt="Overlay"
+                    class="absolute inset-0 h-full w-full object-contain z-20 pointer-events-none"
                     onerror={(e) => {
                       (e.currentTarget as HTMLImageElement).style.display =
                         "none";

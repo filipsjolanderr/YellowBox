@@ -65,35 +65,56 @@ pub fn hydrate_state_from_folder(
 
         let id_lower = item.id.to_lowercase();
 
+        let id_marker = format!("_{}.", id_lower);
+        let main_marker = format!("{}-main", id_lower);
+        let zip_marker = format!("{}-raw.zip", id_lower);
+
         let found_file = existing_files.iter().find(|f| {
-            f.contains(&id_lower)
+            f.contains(&id_marker)
                 && !f.contains("-main")
                 && !f.contains("-overlay")
                 && !f.ends_with(".zip")
         });
 
-        let main_file = existing_files
-            .iter()
-            .find(|f| f.contains(&id_lower) && f.contains("-main"));
+        let main_file = existing_files.iter().find(|f| f.contains(&main_marker));
 
-        let zip_exists = existing_files
-            .iter()
-            .any(|f| f.contains(&id_lower) && f.ends_with(".zip"));
+        let overlay_marker = format!("{}-overlay", id_lower);
+        let overlay_exists = existing_files.iter().any(|f| f.contains(&overlay_marker));
+
+        let zip_exists = existing_files.iter().any(|f| f.contains(&zip_marker));
 
         if let Some(f) = found_file {
             let ext = Path::new(f)
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string());
-            let _ = db.update_state(&item.id, ProcessingState::Completed, None, ext);
+            let _ = db.update_state(
+                &item.id,
+                ProcessingState::Completed,
+                None,
+                ext,
+                Some(overlay_exists),
+            );
         } else if let Some(m) = main_file {
             let ext = Path::new(m)
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string());
-            let _ = db.update_state(&item.id, ProcessingState::Extracted, None, ext);
+            let _ = db.update_state(
+                &item.id,
+                ProcessingState::Extracted,
+                None,
+                ext,
+                Some(overlay_exists),
+            );
         } else if zip_exists {
-            let _ = db.update_state(&item.id, ProcessingState::Downloaded, None, None);
+            let _ = db.update_state(
+                &item.id,
+                ProcessingState::Downloaded,
+                None,
+                None,
+                Some(overlay_exists),
+            );
         }
     }
 

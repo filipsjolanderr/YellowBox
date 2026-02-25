@@ -40,7 +40,7 @@ pub async fn download_memory(client: &Client, item: &MemoryItem, dest_dir: &Path
 
                     let extension = if content_type.contains("zip") || content_type.contains("application/zip") || content_type.contains("application/x-zip-compressed") {
                         "zip"
-                    } else if content_type.contains("video/") || item.download_url.to_lowercase().contains("video") || item.download_url.to_lowercase().contains(".mp4") || item.download_url.to_lowercase().contains(".mov") {
+                    } else if content_type.contains("video/") || item.media_type == "Video" || item.download_url.to_lowercase().contains("video") || item.download_url.to_lowercase().contains(".mp4") || item.download_url.to_lowercase().contains(".mov") {
                         "mp4"
                     } else {
                         "jpg"

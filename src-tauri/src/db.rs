@@ -24,7 +24,9 @@ impl DbManager {
                 location TEXT,
                 state TEXT NOT NULL,
                 error_message TEXT,
-                extension TEXT
+                extension TEXT,
+                has_overlay INTEGER DEFAULT 0,
+                media_type TEXT
             )",
             [],
         )?;
@@ -34,8 +36,8 @@ impl DbManager {
     /// Inserts a new memory item or ignores it if the ID already exists
     pub fn insert_or_ignore_memory(&self, item: &MemoryItem) -> Result<()> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, media_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 item.id,
                 item.download_url,
@@ -43,7 +45,9 @@ impl DbManager {
                 item.location,
                 item.state.as_str(),
                 item.error_message,
-                item.extension
+                item.extension,
+                item.has_overlay as i32,
+                item.media_type
             ],
         )?;
         Ok(())
@@ -56,24 +60,33 @@ impl DbManager {
         state: ProcessingState,
         error_message: Option<&str>,
         extension: Option<String>,
+        has_overlay: Option<bool>,
     ) -> Result<()> {
-        if let Some(ext) = extension {
-            self.conn.execute(
-                "UPDATE memories SET state = ?1, error_message = ?2, extension = ?3 WHERE id = ?4",
-                params![state.as_str(), error_message, ext, id],
-            )?;
-        } else {
-            self.conn.execute(
-                "UPDATE memories SET state = ?1, error_message = ?2 WHERE id = ?3",
-                params![state.as_str(), error_message, id],
-            )?;
-        }
+        // Simple update with fixed params is safer than building query strings if we know the schema
+        // Since sqlite params are positional, we use COALESCE to keep existing values when None is provided.
+
+        self.conn.execute(
+            "UPDATE memories SET 
+                state = ?1, 
+                error_message = ?2, 
+                extension = COALESCE(?3, extension),
+                has_overlay = COALESCE(?4, has_overlay)
+             WHERE id = ?5",
+            params![
+                state.as_str(),
+                error_message,
+                extension,
+                has_overlay.map(|b| b as i32),
+                id
+            ],
+        )?;
+
         Ok(())
     }
 
     /// Retrieves all memory items
     pub fn get_all_memories(&self) -> Result<Vec<MemoryItem>> {
-        let mut stmt = self.conn.prepare("SELECT id, download_url, original_date, location, state, error_message, extension FROM memories")?;
+        let mut stmt = self.conn.prepare("SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, media_type FROM memories")?;
         let memories = stmt
             .query_map([], |row| {
                 Ok(MemoryItem {
@@ -84,6 +97,8 @@ impl DbManager {
                     state: ProcessingState::from_str(&row.get::<_, String>(4)?),
                     error_message: row.get(5)?,
                     extension: row.get(6)?,
+                    has_overlay: row.get::<_, i32>(7)? != 0,
+                    media_type: row.get(8)?,
                 })
             })?
             .filter_map(Result::ok)

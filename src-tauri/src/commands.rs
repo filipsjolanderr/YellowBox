@@ -91,16 +91,28 @@ async fn process_item(item: MemoryItem, db: Arc<Mutex<DbManager>>, app: AppHandl
 
     macro_rules! update_state {
         ($state:expr, $err:expr) => {
-            update_state!($state, $err, None)
+            update_state!($state, $err, None, None)
         };
-        ($state:expr, $err:expr, $ext:expr) => {{
+        ($state:expr, $err:expr, $ext:expr) => {
+            update_state!($state, $err, $ext, None)
+        };
+        ($state:expr, $err:expr, $ext:expr, $overlay:expr) => {{
             current_item.state = $state;
             current_item.error_message = $err;
             if let Some(ext) = $ext {
                 current_item.extension = Some(ext);
             }
+            if let Some(overlay) = $overlay {
+                current_item.has_overlay = overlay;
+            }
             let db_lock = db.lock().unwrap();
-            let _ = db_lock.update_state(&current_item.id, current_item.state.clone(), current_item.error_message.as_deref(), current_item.extension.clone());
+            let _ = db_lock.update_state(
+                &current_item.id, 
+                current_item.state.clone(), 
+                current_item.error_message.as_deref(), 
+                current_item.extension.clone(),
+                Some(current_item.has_overlay)
+            );
             let _ = app.emit("memory-updated", current_item.clone());
         }};
     }
@@ -130,7 +142,8 @@ async fn process_item(item: MemoryItem, db: Arc<Mutex<DbManager>>, app: AppHandl
             match res {
                 Ok(files) => {
                     let ext = files.0.extension().and_then(|s| s.to_str()).map(|s| s.to_string());
-                    update_state!(ProcessingState::Extracted, None, ext);
+                    let has_overlay = files.1.is_some();
+                    update_state!(ProcessingState::Extracted, None, ext, Some(has_overlay));
                     files
                 },
                 Err(e) => {
