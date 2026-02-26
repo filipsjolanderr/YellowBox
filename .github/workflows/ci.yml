@@ -23,6 +23,25 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      - name: Cache FFmpeg Binaries
+        uses: actions/cache@v4
+        id: cache-ffmpeg
+        with:
+          path: src-tauri/bin
+          key: ${{ runner.os }}-ffmpeg-v6.1
+
+      - name: Download FFmpeg Binaries
+        if: steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: bun run scripts/setup-ffmpeg.js
+
+      - name: Cache webkit2gtk (ubuntu only)
+        uses: actions/cache@v4
+        if: matrix.platform == 'ubuntu-22.04'
+        id: cache-webkit2gtk
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-webkit2gtk-4.1
+
       - name: Install webkit2gtk (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |

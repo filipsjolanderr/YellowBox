@@ -46,7 +46,23 @@ const downloads = [
 
 async function downloadAndExtract() {
     console.log(`Setting up FFmpeg binaries in ${binDir}`);
-    for (const item of downloads) {
+
+    // Filter to only download the binaries required for the current host OS
+    const platform = process.platform;
+    let targetPlatformString = '';
+
+    if (platform === 'win32') targetPlatformString = 'windows';
+    else if (platform === 'darwin') targetPlatformString = 'apple';
+    else if (platform === 'linux') targetPlatformString = 'linux';
+
+    const downloadsForPlatform = downloads.filter(d => d.name.includes(targetPlatformString));
+
+    if (downloadsForPlatform.length === 0) {
+        console.log(`No FFmpeg binaries matched for platform: ${platform} (${targetPlatformString})`);
+        return;
+    }
+
+    for (const item of downloadsForPlatform) {
         const outPath = path.join(binDir, item.name);
         if (fs.existsSync(outPath)) {
             console.log(`✅ Skipping ${item.name}, already exists.`);
