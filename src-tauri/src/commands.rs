@@ -2,7 +2,7 @@ use crate::db::{DbManager, MemoryRepository};
 use crate::error::Result;
 use crate::models::{MemoryItem, ProcessingState};
 use crate::pipeline::PipelineService;
-use crate::{downloader, extractor, fs, metadata};
+use crate::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
