@@ -1,8 +1,8 @@
 use crate::db::{DbManager, MemoryRepository};
 use crate::error::Result;
-use crate::pipeline::PipelineService;
-use crate::{downloader, extractor, metadata, fs};
 use crate::models::{MemoryItem, ProcessingState};
+use crate::pipeline::PipelineService;
+use crate::{downloader, extractor, fs, metadata};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
@@ -86,16 +86,19 @@ pub async fn start_pipeline(
     concurrency_limit: usize,
     overwrite_existing: bool,
     app: AppHandle,
-    state: State<'_, AppState>
+    state: State<'_, AppState>,
 ) -> Result<()> {
     let dest_dir = {
         let lock = state.output_dir.lock().unwrap();
-        lock.clone().ok_or_else(|| "No output directory selected".to_string())?
+        lock.clone()
+            .ok_or_else(|| "No output directory selected".to_string())?
     };
 
     let items_to_process = {
         let db_lock = state.db.lock().unwrap();
-        let db = db_lock.as_ref().ok_or_else(|| "DB not initialized".to_string())?;
+        let db = db_lock
+            .as_ref()
+            .ok_or_else(|| "DB not initialized".to_string())?;
         let all = db.get_all_memories()?;
         all.into_iter()
             .filter(|i| i.state != ProcessingState::Completed || overwrite_existing)
@@ -104,14 +107,20 @@ pub async fn start_pipeline(
 
     let db = {
         let db_lock = state.db.lock().unwrap();
-        db_lock.as_ref().cloned().ok_or_else(|| "DB not initialized".to_string())?
+        db_lock
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "DB not initialized".to_string())?
     };
 
     let pipeline_service = PipelineService::new(db, app, dest_dir);
 
     // Spawn a background task to process the pipeline asynchronously
     tokio::spawn(async move {
-        if let Err(e) = pipeline_service.process_all(items_to_process, concurrency_limit, overwrite_existing).await {
+        if let Err(e) = pipeline_service
+            .process_all(items_to_process, concurrency_limit, overwrite_existing)
+            .await
+        {
             eprintln!("Pipeline background task error: {}", e);
         }
     });

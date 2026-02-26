@@ -3,7 +3,7 @@ use crate::error::Result;
 use crate::models::{MemoryItem, ProcessingState};
 use crate::{combiner, downloader, extractor, metadata};
 use futures::stream::{self, StreamExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -33,7 +33,12 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
         Self { db, app, dest_dir }
     }
 
-    pub async fn process_all(&self, items: Vec<MemoryItem>, concurrency_limit: usize, overwrite_existing: bool) -> Result<()> {
+    pub async fn process_all(
+        &self,
+        items: Vec<MemoryItem>,
+        concurrency_limit: usize,
+        overwrite_existing: bool,
+    ) -> Result<()> {
         stream::iter(items.into_iter().map(|item| {
             let service = self.clone();
             async move {
@@ -103,10 +108,15 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
         // 2. Extract
         let extracted_files = if current_item.state == ProcessingState::Downloaded {
             if zip_path.exists() {
-                let res = extractor::extract_memory(&zip_path, &current_item.id, &self.dest_dir).await;
+                let res =
+                    extractor::extract_memory(&zip_path, &current_item.id, &self.dest_dir).await;
                 match res {
                     Ok(files) => {
-                        let ext = files.0.extension().and_then(|s| s.to_str()).map(|s| s.to_string());
+                        let ext = files
+                            .0
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string());
                         let has_overlay = files.1.is_some();
                         update_state!(ProcessingState::Extracted, None, ext, Some(has_overlay));
                         files
@@ -117,7 +127,10 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
                     }
                 }
             } else {
-                update_state!(ProcessingState::Failed, Some("Downloaded zip missing".to_string()));
+                update_state!(
+                    ProcessingState::Failed,
+                    Some("Downloaded zip missing".to_string())
+                );
                 return Err("Downloaded zip missing".into());
             }
         } else {
@@ -129,9 +142,20 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
                     "jpg"
                 }
             });
-            let main = self.dest_dir.join(format!("{}-main.{}", current_item.id, ext));
-            let overlay = self.dest_dir.join(format!("{}-overlay.png", current_item.id));
-            (main, if overlay.exists() { Some(overlay) } else { None })
+            let main = self
+                .dest_dir
+                .join(format!("{}-main.{}", current_item.id, ext));
+            let overlay = self
+                .dest_dir
+                .join(format!("{}-overlay.png", current_item.id));
+            (
+                main,
+                if overlay.exists() {
+                    Some(overlay)
+                } else {
+                    None
+                },
+            )
         };
 
         // 3. Combine
@@ -145,17 +169,26 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
                     "jpg"
                 }
             });
-            let clean_name = metadata::generate_clean_filename(&current_item.original_date, &current_item.id, ext);
+            let clean_name = metadata::generate_clean_filename(
+                &current_item.original_date,
+                &current_item.id,
+                ext,
+            );
             let combined_dest = self.dest_dir.join(clean_name);
 
             if let Some(overlay) = overlay_path {
                 if is_video_ext(ext) {
-                    if let Err(e) = combiner::combine_video(&self.app, &main_path, &overlay, &combined_dest).await {
+                    if let Err(e) =
+                        combiner::combine_video(&self.app, &main_path, &overlay, &combined_dest)
+                            .await
+                    {
                         update_state!(ProcessingState::Failed, Some(e.to_string()));
                         return Err(e.into());
                     }
                 } else {
-                    if let Err(e) = combiner::combine_image(&main_path, &overlay, &combined_dest).await {
+                    if let Err(e) =
+                        combiner::combine_image(&main_path, &overlay, &combined_dest).await
+                    {
                         update_state!(ProcessingState::Failed, Some(e.to_string()));
                         return Err(e.into());
                     }
@@ -175,14 +208,32 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
                     "jpg"
                 }
             });
-            let clean_name = metadata::generate_clean_filename(&current_item.original_date, &current_item.id, ext);
+            let clean_name = metadata::generate_clean_filename(
+                &current_item.original_date,
+                &current_item.id,
+                ext,
+            );
             self.dest_dir.join(&clean_name)
         };
 
         // 4. Metadata
         if current_item.state == ProcessingState::Combined {
-            if let Err(e) = metadata::set_file_times(&final_file, &current_item.original_date).await {
-                update_state!(ProcessingState::Failed, Some(format!("Metadata Error: {}", e)));
+            if let Some(ref loc) = current_item.location {
+                let ext = current_item.extension.as_deref().unwrap_or("");
+                let is_video = is_video_ext(ext);
+                if let Err(e) =
+                    metadata::apply_location_metadata(&self.app, &final_file, loc, is_video).await
+                {
+                    eprintln!("Warning: Failed to apply location metadata: {}", e);
+                }
+            }
+
+            if let Err(e) = metadata::set_file_times(&final_file, &current_item.original_date).await
+            {
+                update_state!(
+                    ProcessingState::Failed,
+                    Some(format!("Metadata Error: {}", e))
+                );
                 return Err(e.into());
             }
 

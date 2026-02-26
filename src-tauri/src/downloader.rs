@@ -1,15 +1,19 @@
-use reqwest::{Client, header};
+use crate::models::MemoryItem;
+use futures::StreamExt;
+use reqwest::{header, Client};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use std::time::Duration;
-use crate::models::{MemoryItem};
-use futures::StreamExt;
 
 const MAX_RETRIES: u32 = 3;
 
 /// Downloads a memory file, returning the path to the saved raw file.
-pub async fn download_memory(client: &Client, item: &MemoryItem, dest_dir: &Path) -> Result<PathBuf, String> {
+pub async fn download_memory(
+    client: &Client,
+    item: &MemoryItem,
+    dest_dir: &Path,
+) -> Result<PathBuf, String> {
     // Generate a raw file name.
     let file_name = format!("{}-raw.tmp", item.id);
     let dest_path = dest_dir.join(&file_name);
@@ -23,8 +27,9 @@ pub async fn download_memory(client: &Client, item: &MemoryItem, dest_dir: &Path
     let mut attempt = 0;
     loop {
         attempt += 1;
-        
-        let request = client.get(&item.download_url)
+
+        let request = client
+            .get(&item.download_url)
             .header("X-Snap-Route-Tag", "mem-dmd")
             .send()
             .await;
@@ -33,14 +38,23 @@ pub async fn download_memory(client: &Client, item: &MemoryItem, dest_dir: &Path
             Ok(response) => {
                 if response.status().is_success() {
                     // Check Content-Disposition or Content-Type to determine if it's a zip or media
-                    let content_type = response.headers()
+                    let content_type = response
+                        .headers()
                         .get(header::CONTENT_TYPE)
                         .and_then(|val| val.to_str().ok())
                         .unwrap_or("");
 
-                    let extension = if content_type.contains("zip") || content_type.contains("application/zip") || content_type.contains("application/x-zip-compressed") {
+                    let extension = if content_type.contains("zip")
+                        || content_type.contains("application/zip")
+                        || content_type.contains("application/x-zip-compressed")
+                    {
                         "zip"
-                    } else if content_type.contains("video/") || item.media_type == "Video" || item.download_url.to_lowercase().contains("video") || item.download_url.to_lowercase().contains(".mp4") || item.download_url.to_lowercase().contains(".mov") {
+                    } else if content_type.contains("video/")
+                        || item.media_type == "Video"
+                        || item.download_url.to_lowercase().contains("video")
+                        || item.download_url.to_lowercase().contains(".mp4")
+                        || item.download_url.to_lowercase().contains(".mov")
+                    {
                         "mp4"
                     } else {
                         "jpg"
@@ -53,9 +67,11 @@ pub async fn download_memory(client: &Client, item: &MemoryItem, dest_dir: &Path
                         return Ok(final_dest_path);
                     }
 
-                    let mut file = File::create(&final_dest_path).await.map_err(|e| e.to_string())?;
+                    let mut file = File::create(&final_dest_path)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     let mut stream = response.bytes_stream();
-                    
+
                     while let Some(chunk) = stream.next().await {
                         let data = chunk.map_err(|e| e.to_string())?;
                         file.write_all(&data).await.map_err(|e| e.to_string())?;
@@ -64,7 +80,7 @@ pub async fn download_memory(client: &Client, item: &MemoryItem, dest_dir: &Path
                 } else if attempt >= MAX_RETRIES {
                     return Err(format!("HTTP Error: {}", response.status()));
                 }
-            },
+            }
             Err(e) => {
                 if attempt >= MAX_RETRIES {
                     return Err(e.to_string());

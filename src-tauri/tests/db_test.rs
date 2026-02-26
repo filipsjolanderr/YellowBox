@@ -1,0 +1,112 @@
+use std::path::Path;
+use yellowbox_lib::db::{DbManager, MemoryRepository};
+use yellowbox_lib::models::{MemoryItem, ProcessingState};
+
+fn create_test_db() -> DbManager {
+    // SQLite can open an in-memory database by passing ":memory:"
+    DbManager::new(":memory:").expect("Failed to create in-memory db")
+}
+
+fn create_mock_item(id: &str) -> MemoryItem {
+    MemoryItem {
+        id: id.to_string(),
+        download_url: format!("http://example.com/{}", id),
+        original_date: "2024-01-01 12:00:00 UTC".to_string(),
+        location: None,
+        state: ProcessingState::Pending,
+        error_message: None,
+        extension: None,
+        has_overlay: false,
+        media_type: "image".to_string(),
+    }
+}
+
+#[test]
+fn test_db_initialization() {
+    let _db = create_test_db();
+}
+
+#[test]
+fn test_insert_and_get_memories() {
+    let db = create_test_db();
+    let item1 = create_mock_item("mem1");
+    let item2 = create_mock_item("mem2");
+
+    db.insert_or_ignore_memory(&item1).unwrap();
+    db.insert_or_ignore_memory(&item2).unwrap();
+
+    let memories = db.get_all_memories().unwrap();
+    assert_eq!(memories.len(), 2);
+    assert!(memories.iter().any(|m| m.id == "mem1"));
+    assert!(memories.iter().any(|m| m.id == "mem2"));
+}
+
+#[test]
+fn test_insert_or_ignore_duplicate() {
+    let db = create_test_db();
+    let item = create_mock_item("mem1");
+
+    // Insert first time
+    db.insert_or_ignore_memory(&item).unwrap();
+
+    // Insert second time with same ID (should just ignore and not error)
+    db.insert_or_ignore_memory(&item).unwrap();
+
+    let memories = db.get_all_memories().unwrap();
+    assert_eq!(memories.len(), 1);
+}
+
+#[test]
+fn test_update_state() {
+    let db = create_test_db();
+    let item = create_mock_item("mem_upd");
+    db.insert_or_ignore_memory(&item).unwrap();
+
+    // Update state to Extract, set extension to "png" and has_overlay to true
+    db.update_state(
+        "mem_upd",
+        ProcessingState::Extracted,
+        Some("No error"),
+        Some("png".to_string()),
+        Some(true),
+    )
+    .unwrap();
+
+    let memories = db.get_all_memories().unwrap();
+    assert_eq!(memories.len(), 1);
+
+    let updated = &memories[0];
+    assert_eq!(updated.state, ProcessingState::Extracted);
+    assert_eq!(updated.error_message, Some("No error".to_string()));
+    assert_eq!(updated.extension, Some("png".to_string()));
+    assert_eq!(updated.has_overlay, true);
+}
+
+#[test]
+fn test_update_partial_fields() {
+    let db = create_test_db();
+    let item = create_mock_item("mem_part");
+    db.insert_or_ignore_memory(&item).unwrap();
+
+    // First update gives it an extension and overlay
+    db.update_state(
+        "mem_part",
+        ProcessingState::Downloaded,
+        None,
+        Some("jpg".to_string()),
+        Some(true),
+    )
+    .unwrap();
+
+    // Second update should preserve extension/overlay due to COALESCE in SQL
+    db.update_state("mem_part", ProcessingState::Completed, None, None, None)
+        .unwrap();
+
+    let memories = db.get_all_memories().unwrap();
+    assert_eq!(memories.len(), 1);
+
+    let updated = &memories[0];
+    assert_eq!(updated.state, ProcessingState::Completed);
+    assert_eq!(updated.extension, Some("jpg".to_string()));
+    assert_eq!(updated.has_overlay, true);
+}

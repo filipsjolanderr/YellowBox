@@ -60,7 +60,7 @@
                         >{completedCount}</span
                     >
                 </div>
-                <div class="w-48meta ml-2">
+                <div class="w-48 ml-2">
                     <Progress value={progressPercentage} class="h-1.5" />
                 </div>
             </div>

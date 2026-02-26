@@ -2,7 +2,11 @@ use std::path::{Path, PathBuf};
 use tokio::task;
 
 /// Extracts a memory ZIP archive and returns the paths to the main media and (optional) overlay file.
-pub async fn extract_memory(zip_path: &Path, id: &str, dest_dir: &Path) -> Result<(PathBuf, Option<PathBuf>), String> {
+pub async fn extract_memory(
+    zip_path: &Path,
+    id: &str,
+    dest_dir: &Path,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
     let zip_path = zip_path.to_owned();
     let id = id.to_owned();
     let dest_dir = dest_dir.to_owned();
@@ -37,13 +41,24 @@ pub async fn extract_memory(zip_path: &Path, id: &str, dest_dir: &Path) -> Resul
                 std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
                 overlay_file = Some(outpath);
             } else if name_str.ends_with(".mp4") || name_str.ends_with(".mov") {
-                let ext = if name_str.ends_with(".mp4") { "mp4" } else { "mov" };
+                let ext = if name_str.ends_with(".mp4") {
+                    "mp4"
+                } else {
+                    "mov"
+                };
                 let outpath = dest_dir.join(format!("{}-main.{}", id, ext));
                 let mut outfile = std::fs::File::create(&outpath).map_err(|e| e.to_string())?;
                 std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
                 main_file = Some(outpath);
-            } else if name_str.ends_with(".jpg") || name_str.ends_with(".jpeg") || name_str.ends_with(".png") {
-                let ext = if name_str.ends_with(".png") { "png" } else { "jpg" };
+            } else if name_str.ends_with(".jpg")
+                || name_str.ends_with(".jpeg")
+                || name_str.ends_with(".png")
+            {
+                let ext = if name_str.ends_with(".png") {
+                    "png"
+                } else {
+                    "jpg"
+                };
                 let outpath = dest_dir.join(format!("{}-main.{}", id, ext));
                 let mut outfile = std::fs::File::create(&outpath).map_err(|e| e.to_string())?;
                 std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
@@ -63,5 +78,7 @@ pub async fn extract_memory(zip_path: &Path, id: &str, dest_dir: &Path) -> Resul
 
         let main = main_file.ok_or_else(|| "Main media file not found in ZIP".to_string())?;
         Ok((main, overlay_file))
-    }).await.map_err(|e| e.to_string())?
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
