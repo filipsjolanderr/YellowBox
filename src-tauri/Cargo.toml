@@ -24,12 +24,12 @@ tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 reqwest = { version = "0.12", features = ["stream", "json"] }
 futures = "0.3"
 chrono = "0.4"
 filetime = "0.2"
-rusqlite = { version = "0.33", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 zip = "2.2"
 image = "0.25"
 walkdir = "2.5"
@@ -38,6 +38,8 @@ strum = "0.28.0"
 strum_macros = "0.28.0"
 num_cpus = "1.17.0"
 little_exif = "0.6.23"
+tokio-rusqlite = "0.7.0"
+base64 = "0.22.1"
 
 [dev-dependencies]
 tempfile = "3.26.0"

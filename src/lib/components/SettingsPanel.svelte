@@ -64,30 +64,6 @@
         </DialogHeader>
 
         <div class="grid gap-6 py-6">
-            <div class="space-y-3">
-                <div class="flex items-center justify-between">
-                    <Label for="concurrency" class="text-sm font-medium"
-                        >Concurrency Limit</Label
-                    >
-                    <span
-                        class="text-xs text-muted-foreground w-6 text-right font-mono"
-                        >{appConfig.concurrencyLimit}</span
-                    >
-                </div>
-                <Slider
-                    id="concurrency"
-                    type="single"
-                    max={32}
-                    min={1}
-                    step={1}
-                    bind:value={appConfig.concurrencyLimit}
-                />
-                <p class="text-[11px] text-muted-foreground">
-                    Maximum number of files processed in parallel. Reduce this
-                    if encountering OS file limits or network errors.
-                </p>
-            </div>
-
             <div class="flex items-center justify-between space-x-4">
                 <div class="flex flex-col space-y-1">
                     <Label for="overwrite" class="text-sm font-medium"

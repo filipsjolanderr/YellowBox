@@ -2,37 +2,28 @@
     import { Progress } from "$lib/components/ui/progress";
     import { Badge } from "$lib/components/ui/badge";
     import { Button } from "$lib/components/ui/button";
-    import { Play, RefreshCw, FolderOpen } from "lucide-svelte";
+    import { Play, RefreshCw, FolderOpen, ChartNetwork } from "lucide-svelte";
     import type { ParsedMemory } from "$lib/parser";
     import { revealItemInDir } from "@tauri-apps/plugin-opener";
+    import StatusTracker from "./StatusTracker.svelte";
+    import type { Session } from "$lib/session.svelte";
 
-    let {
-        memories,
-        memoriesLength,
-        completedCount,
-        progressPercentage,
-        isAllProcessed,
-        selectedZip,
-        selectedOutput,
-        isProcessing,
-        isPaused,
-        onSelectOutput,
-        onStartBackup,
-        onTogglePause,
-    } = $props<{
-        memories: ParsedMemory[];
-        memoriesLength: number;
-        completedCount: number;
-        progressPercentage: number;
-        isAllProcessed: boolean;
-        selectedZip: string | null;
-        selectedOutput: string | null;
-        isProcessing: boolean;
-        isPaused: boolean;
+    let { session, onSelectOutput, onStartBackup, onTogglePause } = $props<{
+        session: Session;
         onSelectOutput: () => void;
         onStartBackup: () => void;
         onTogglePause: () => void;
     }>();
+
+    // Derived aliases for convenience if needed, or just use session.X
+    let memoriesLength = $derived(session.totalCount);
+    let completedCount = $derived(session.completedCount);
+    let progressPercentage = $derived(session.progressPercentage);
+    let isAllProcessed = $derived(session.isAllProcessed);
+    let selectedZip = $derived(session.selectedZip);
+    let selectedOutput = $derived(session.selectedOutput);
+    let isProcessing = $derived(session.isProcessing);
+    let isPaused = $derived(session.isPaused);
 
     async function handleOpenOutputFolder() {
         if (!selectedOutput) return;
@@ -50,31 +41,36 @@
     >
         <!-- Left: Stats & Chart -->
         <div class="flex items-center gap-6 h-full">
-            <!-- Stats Text Breakdown -->
-            <div class="flex flex-col gap-1">
-                <div class="flex items-center gap-4 text-xs">
-                    <div class="flex flex-col items-start leading-none">
-                        <span class="text-muted-foreground">Total Memories</span
-                        >
-                        <span class="font-medium text-sm">{memoriesLength}</span
-                        >
+            <StatusTracker {session} />
+
+            <div class="flex flex-col gap-2 min-w-[300px]">
+                <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        {#if isProcessing}
+                            <RefreshCw
+                                class="h-3 w-3 animate-spin text-primary"
+                            />
+                            <span class="font-medium text-foreground">
+                                {isPaused ? "Paused" : "Processing Memories..."}
+                            </span>
+                        {:else if isAllProcessed}
+                            <div
+                                class="h-2 w-2 rounded-full bg-green-500"
+                            ></div>
+                            <span class="font-medium text-green-500"
+                                >Backup Complete</span
+                            >
+                        {:else}
+                            <span class="text-muted-foreground"
+                                >Ready to Backup</span
+                            >
+                        {/if}
                     </div>
-                    <div class="flex flex-col items-start leading-none">
-                        <span class="text-muted-foreground">Completed</span>
-                        <span class="font-medium text-green-500 text-sm"
-                            >{completedCount}</span
-                        >
-                    </div>
-                    <div class="flex flex-col items-start leading-none">
-                        <span class="text-muted-foreground">Remaining</span>
-                        <span class="font-medium text-sm"
-                            >{memoriesLength - completedCount}</span
-                        >
-                    </div>
+                    <span class="text-muted-foreground tabular-nums">
+                        {Math.round(progressPercentage)}%
+                    </span>
                 </div>
-                <div class="w-64 mt-1 flex items-center gap-2">
-                    <Progress value={progressPercentage} class="h-1.5 flex-1" />
-                </div>
+                <Progress value={progressPercentage} class="h-1.5" />
             </div>
         </div>
 

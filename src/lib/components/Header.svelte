@@ -78,7 +78,7 @@
                             <span class="font-medium">{tab.name}</span>
                             {#if tab.totalCount > 0}
                                 <span
-                                    class="text-[10px] flex items-center justify-center  text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded-sm"
+                                    class="text-[10px] flex items-center justify-center text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded-sm"
                                 >
                                     {tab.completedCount}/{tab.totalCount}
                                 </span>

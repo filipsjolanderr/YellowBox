@@ -4,16 +4,18 @@ use std::path::Path;
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
-pub async fn set_file_times(path: &Path, date_str: &str) -> Result<(), String> {
+use crate::error::AppError;
+
+pub async fn set_file_times(path: &Path, date_str: &str) -> crate::error::Result<()> {
     // Parse "2021-12-10 12:55:19 UTC" to a timestamp
     let dt = chrono::NaiveDateTime::parse_from_str(date_str, "%Y-%m-%d %H:%M:%S UTC")
-        .map_err(|e| format!("Failed to parse date '{}': {}", date_str, e))?;
+        .map_err(|e| AppError::Parse(format!("Failed to parse date '{}': {}", date_str, e)))?;
 
     let dt_utc: DateTime<Utc> = Utc.from_utc_datetime(&dt);
     let ft = FileTime::from_unix_time(dt_utc.timestamp(), 0);
 
-    filetime::set_file_mtime(path, ft).map_err(|e| e.to_string())?;
-    filetime::set_file_atime(path, ft).map_err(|e| e.to_string())?;
+    filetime::set_file_mtime(path, ft)?;
+    filetime::set_file_atime(path, ft)?;
 
     Ok(())
 }
@@ -45,7 +47,7 @@ pub fn get_ffmpeg_location_args(path: &Path, temp_dest: &Path, lat: f32, lon: f3
     ]
 }
 
-pub async fn apply_image_location_metadata(path: &Path, lat: f32, lon: f32) -> Result<(), String> {
+pub async fn apply_image_location_metadata(path: &Path, lat: f32, lon: f32) -> crate::error::Result<()> {
     let path_buf = path.to_path_buf();
     let _ = tokio::task::spawn_blocking(move || {
         use little_exif::exif_tag::ExifTag;
@@ -94,7 +96,7 @@ pub async fn apply_location_metadata(
     path: &Path,
     location: &str,
     is_video: bool,
-) -> Result<(), String> {
+) -> crate::error::Result<()> {
     let Some((lat, lon)) = parse_location(location) else {
         return Ok(()); // Invalid location format, just skip
     };
@@ -107,10 +109,10 @@ pub async fn apply_location_metadata(
         let command = app
             .shell()
             .sidecar("ffmpeg")
-            .map_err(|e| e.to_string())?
+            .map_err(|e| AppError::Internal(format!("Failed to get ffmpeg sidecar: {}", e)))?
             .args(args);
 
-        let output = command.output().await.map_err(|e| e.to_string())?;
+        let output = command.output().await.map_err(|e| AppError::Internal(format!("Failed to execute ffmpeg: {}", e)))?;
 
         if output.status.success() && temp_dest.exists() {
             let _ = tokio::fs::rename(&temp_dest, path).await;

@@ -6,7 +6,7 @@ use zip::ZipWriter;
 use yellowbox_lib::db::{DbManager, MemoryRepository};
 use yellowbox_lib::models::{MemoryItem, ProcessingState};
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_end_to_end_extraction_pipeline() {
     let temp_dir = tempfile::tempdir().unwrap();
     let dest_dir = temp_dir.path().join("output");
@@ -14,7 +14,7 @@ async fn test_end_to_end_extraction_pipeline() {
     
     // 1. Setup a mocked DB manager
     let db_path = temp_dir.path().join("memories.db");
-    let db_manager = Arc::new(DbManager::new(&db_path).unwrap());
+    let db_manager = Arc::new(DbManager::new(&db_path).await.unwrap());
     
     // 2. Insert a dummy memory item
     let memory_id = "test-memory-uuid".to_string();
@@ -30,7 +30,7 @@ async fn test_end_to_end_extraction_pipeline() {
         media_type: "Image".to_string(),
     };
     
-    db_manager.insert_or_ignore_memory(&memory_item).unwrap();
+    db_manager.insert_or_ignore_memory(&memory_item).await.unwrap();
     
     // 3. Create a fake downloaded Zip File containing our raw media
     let zip_path = dest_dir.join(format!("{}-raw.zip", memory_id));
@@ -62,10 +62,10 @@ async fn test_end_to_end_extraction_pipeline() {
     assert!(combined_dest.exists(), "Combined file not created");
     
     // Update State
-    db_manager.update_state(&memory_id, ProcessingState::Completed, None, Some("jpg".to_string()), Some(false)).unwrap();
+    db_manager.update_state(&memory_id, ProcessingState::Completed, None, Some("jpg".to_string()), Some(false)).await.unwrap();
     
     // Verify State Check
-    let memories = db_manager.get_all_memories().unwrap();
+    let memories = db_manager.get_all_memories().await.unwrap();
     let item = memories.iter().find(|i| i.id == memory_id).unwrap();
     assert_eq!(item.state, ProcessingState::Completed);
     assert!(combined_dest.exists());

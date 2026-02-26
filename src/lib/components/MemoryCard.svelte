@@ -8,8 +8,11 @@
         Image as ImageIcon,
         CircleAlert,
         Archive,
+        RefreshCw,
     } from "lucide-svelte";
+    import { toast } from "svelte-sonner";
 
+    export let sessionId: string;
     export let memory: ParsedMemory;
     export let selectedOutput: string | null;
 
@@ -115,6 +118,21 @@
             url.includes(".mov") ||
             url.includes("video")
         );
+    }
+
+    async function handleRetry(e: MouseEvent) {
+        e.stopPropagation();
+        try {
+            await tauriService.retryItem(sessionId, memory.id);
+            // After resetting state to Pending, give it a tiny delay then kick off pipeline processing
+            setTimeout(() => {
+                tauriService.startPipeline(sessionId, false).catch((err) => {
+                    toast.error(`Auto-resume failed: ${err}`);
+                });
+            }, 300);
+        } catch (err) {
+            toast.error(`Retry failed: ${err}`);
+        }
     }
 </script>
 
@@ -243,12 +261,21 @@
                 class="absolute inset-x-0 bottom-0 top-1/2 z-30 flex flex-col justify-end bg-gradient-to-t from-red-900/90 to-red-500/10 pointer-events-auto overflow-hidden rounded-b-[4px]"
             >
                 <div
-                    class="text-white text-[9px] p-2 leading-tight font-medium max-h-full overflow-y-auto w-full"
+                    class="text-white text-[9px] p-2 leading-tight font-medium max-h-full overflow-y-auto w-full flex flex-col justify-between h-full"
                 >
-                    <span class="font-bold flex items-center mb-1"
-                        ><CircleAlert class="h-3 w-3 mr-1" /> Error</span
+                    <div>
+                        <span
+                            class="font-bold flex items-center mb-1 text-red-100"
+                            ><CircleAlert class="h-3 w-3 mr-1" /> Error</span
+                        >
+                        {memory.errorMessage}
+                    </div>
+                    <button
+                        onclick={handleRetry}
+                        class="mt-2 flex items-center justify-center gap-1 rounded bg-white/20 hover:bg-white/30 p-1 text-white transition-colors cursor-pointer"
                     >
-                    {memory.errorMessage}
+                        <RefreshCw class="h-3 w-3" /> Retry
+                    </button>
                 </div>
             </div>
         {/if}

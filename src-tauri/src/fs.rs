@@ -38,7 +38,7 @@ pub fn extract_json_from_zip(zip_path: &Path) -> Result<(String, PathBuf), Strin
 
 /// Recursively scans the memories folder and auto-populates the database state if
 /// matching files are already present downloaded from Snapchat's new export system.
-pub fn hydrate_state_from_folder(
+pub async fn hydrate_state_from_folder(
     memories_dir: &Path,
     db: &impl MemoryRepository,
     items: &[MemoryItem],
@@ -61,16 +61,17 @@ pub fn hydrate_state_from_folder(
     }
 
     for item in items {
-        let _ = db.insert_or_ignore_memory(item);
+        let _ = db.insert_or_ignore_memory(item).await;
 
         let id_lower = item.id.to_lowercase();
 
         let id_marker = format!("_{}.", id_lower);
+        let id_marker_alt = format!("{}.", id_lower); // In case it's just the ID
         let main_marker = format!("{}-main", id_lower);
         let zip_marker = format!("{}-raw.zip", id_lower);
 
         let found_file = existing_files.iter().find(|f| {
-            f.contains(&id_marker)
+            (f.contains(&id_marker) || f.starts_with(&id_marker_alt))
                 && !f.contains("-main")
                 && !f.contains("-overlay")
                 && !f.ends_with(".zip")
@@ -94,7 +95,7 @@ pub fn hydrate_state_from_folder(
                 None,
                 ext,
                 Some(overlay_exists),
-            );
+            ).await;
         } else if let Some(m) = main_file {
             let ext = Path::new(m)
                 .extension()
@@ -106,7 +107,7 @@ pub fn hydrate_state_from_folder(
                 None,
                 ext,
                 Some(overlay_exists),
-            );
+            ).await;
         } else if zip_exists {
             let _ = db.update_state(
                 &item.id,
@@ -114,7 +115,7 @@ pub fn hydrate_state_from_folder(
                 None,
                 None,
                 Some(overlay_exists),
-            );
+            ).await;
         }
     }
 

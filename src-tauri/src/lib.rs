@@ -24,6 +24,8 @@ pub fn run() {
             commands::initialize_and_load,
             commands::get_memories_state,
             commands::start_pipeline,
+            commands::pause_pipeline,
+            commands::retry_item,
             commands::reset_application,
             commands::cleanup_database
         ])

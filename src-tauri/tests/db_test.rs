@@ -1,9 +1,9 @@
 use yellowbox_lib::db::{DbManager, MemoryRepository};
 use yellowbox_lib::models::{MemoryItem, ProcessingState};
 
-fn create_test_db() -> DbManager {
+async fn create_test_db() -> DbManager {
     // SQLite can open an in-memory database by passing ":memory:"
-    DbManager::new(":memory:").expect("Failed to create in-memory db")
+    DbManager::new(":memory:").await.expect("Failed to create in-memory db")
 }
 
 fn create_mock_item(id: &str) -> MemoryItem {
@@ -20,46 +20,46 @@ fn create_mock_item(id: &str) -> MemoryItem {
     }
 }
 
-#[test]
-fn test_db_initialization() {
-    let _db = create_test_db();
+#[tokio::test]
+async fn test_db_initialization() {
+    let _db = create_test_db().await;
 }
 
-#[test]
-fn test_insert_and_get_memories() {
-    let db = create_test_db();
+#[tokio::test]
+async fn test_insert_and_get_memories() {
+    let db = create_test_db().await;
     let item1 = create_mock_item("mem1");
     let item2 = create_mock_item("mem2");
 
-    db.insert_or_ignore_memory(&item1).unwrap();
-    db.insert_or_ignore_memory(&item2).unwrap();
+    db.insert_or_ignore_memory(&item1).await.unwrap();
+    db.insert_or_ignore_memory(&item2).await.unwrap();
 
-    let memories = db.get_all_memories().unwrap();
+    let memories = db.get_all_memories().await.unwrap();
     assert_eq!(memories.len(), 2);
     assert!(memories.iter().any(|m| m.id == "mem1"));
     assert!(memories.iter().any(|m| m.id == "mem2"));
 }
 
-#[test]
-fn test_insert_or_ignore_duplicate() {
-    let db = create_test_db();
+#[tokio::test]
+async fn test_insert_or_ignore_duplicate() {
+    let db = create_test_db().await;
     let item = create_mock_item("mem1");
 
     // Insert first time
-    db.insert_or_ignore_memory(&item).unwrap();
+    db.insert_or_ignore_memory(&item).await.unwrap();
 
     // Insert second time with same ID (should just ignore and not error)
-    db.insert_or_ignore_memory(&item).unwrap();
+    db.insert_or_ignore_memory(&item).await.unwrap();
 
-    let memories = db.get_all_memories().unwrap();
+    let memories = db.get_all_memories().await.unwrap();
     assert_eq!(memories.len(), 1);
 }
 
-#[test]
-fn test_update_state() {
-    let db = create_test_db();
+#[tokio::test]
+async fn test_update_state() {
+    let db = create_test_db().await;
     let item = create_mock_item("mem_upd");
-    db.insert_or_ignore_memory(&item).unwrap();
+    db.insert_or_ignore_memory(&item).await.unwrap();
 
     // Update state to Extract, set extension to "png" and has_overlay to true
     db.update_state(
@@ -69,9 +69,10 @@ fn test_update_state() {
         Some("png".to_string()),
         Some(true),
     )
+    .await
     .unwrap();
 
-    let memories = db.get_all_memories().unwrap();
+    let memories = db.get_all_memories().await.unwrap();
     assert_eq!(memories.len(), 1);
 
     let updated = &memories[0];
@@ -81,11 +82,11 @@ fn test_update_state() {
     assert_eq!(updated.has_overlay, true);
 }
 
-#[test]
-fn test_update_partial_fields() {
-    let db = create_test_db();
+#[tokio::test]
+async fn test_update_partial_fields() {
+    let db = create_test_db().await;
     let item = create_mock_item("mem_part");
-    db.insert_or_ignore_memory(&item).unwrap();
+    db.insert_or_ignore_memory(&item).await.unwrap();
 
     // First update gives it an extension and overlay
     db.update_state(
@@ -95,13 +96,15 @@ fn test_update_partial_fields() {
         Some("jpg".to_string()),
         Some(true),
     )
+    .await
     .unwrap();
 
     // Second update should preserve extension/overlay due to COALESCE in SQL
     db.update_state("mem_part", ProcessingState::Completed, None, None, None)
+        .await
         .unwrap();
 
-    let memories = db.get_all_memories().unwrap();
+    let memories = db.get_all_memories().await.unwrap();
     assert_eq!(memories.len(), 1);
 
     let updated = &memories[0];

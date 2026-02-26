@@ -241,22 +241,36 @@
     tab.isProcessing = true;
     toast.info(`Starting backup pipeline for ${tab.name}...`);
     try {
-      await tauriService.startPipeline(
-        tab.id,
-        appConfig.concurrencyLimit,
-        appConfig.overwriteExisting,
-      );
+      await tauriService.startPipeline(tab.id, appConfig.overwriteExisting);
     } catch (err) {
       toast.error(`Pipeline error: ${err}`);
       tab.isProcessing = false;
     }
   }
 
-  function togglePause() {
+  async function togglePause() {
     const tab = activeTab;
     if (!tab) return;
-    tab.isPaused = !tab.isPaused;
-    toast.info(tab.isPaused ? `${tab.name} Paused` : `${tab.name} Resumed`);
+
+    if (tab.isPaused) {
+      toast.info(`Resuming backup pipeline for ${tab.name}...`);
+      tab.isProcessing = true;
+      try {
+        await tauriService.startPipeline(tab.id, false); // Resume doesn't overwrite
+        tab.isPaused = false;
+      } catch (err) {
+        toast.error(`Pipeline resume error: ${err}`);
+      }
+    } else {
+      toast.info(`Pausing backup pipeline for ${tab.name}...`);
+      try {
+        await tauriService.pausePipeline(tab.id);
+        tab.isPaused = true;
+        tab.isProcessing = false;
+      } catch (err) {
+        toast.error(`Pipeline pause error: ${err}`);
+      }
+    }
   }
 </script>
 
@@ -275,15 +289,7 @@
     {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip}
       <div in:fade={{ duration: 300, delay: 150 }}>
         <StatsPanel
-          memories={activeTab.memories}
-          memoriesLength={activeTab.totalCount}
-          completedCount={activeTab.completedCount}
-          progressPercentage={activeTab.progressPercentage}
-          isAllProcessed={activeTab.isAllProcessed}
-          selectedZip={activeTab.selectedZip}
-          selectedOutput={activeTab.selectedOutput}
-          isProcessing={activeTab.isProcessing}
-          isPaused={activeTab.isPaused}
+          session={activeTab}
           onSelectOutput={handleSelectOutput}
           onStartBackup={startBackup}
           onTogglePause={togglePause}
@@ -299,6 +305,7 @@
           class="absolute inset-0"
         >
           <MemoryGrid
+            sessionId={activeTab.id}
             memories={activeTab.memories.length > 0
               ? activeTab.memories
               : activeTab.parsedItems}

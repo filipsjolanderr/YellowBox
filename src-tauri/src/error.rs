@@ -3,7 +3,7 @@ use serde::{Serialize, Serializer};
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
     #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(#[from] tokio_rusqlite::Error),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -22,6 +22,15 @@ pub enum AppError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Metadata error: {0}")]
+    Metadata(String),
+
+    #[error("Parse error: {0}")]
+    Parse(String),
+
+    #[error("Missing downloaded file: {0}")]
+    MissingFile(String),
 
     #[error("{0}")]
     Message(String),

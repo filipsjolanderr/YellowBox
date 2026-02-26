@@ -10,6 +10,7 @@ pub enum ProcessingState {
     Combined,
     Completed,
     Failed,
+    Paused,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,4 +25,21 @@ pub struct MemoryItem {
     pub extension: Option<String>,
     pub has_overlay: bool,
     pub media_type: String,
+}
+
+impl MemoryItem {
+    /// Determines the fallback extension and generates the final output filename.
+    pub fn generated_filename_and_ext(&self) -> (String, String) {
+        let ext = self.extension.clone().unwrap_or_else(|| {
+            let url = self.download_url.to_lowercase();
+            if url.contains(".mp4") || url.contains(".mov") || url.contains("video") {
+                "mp4".to_string()
+            } else {
+                "jpg".to_string()
+            }
+        });
+        let clean_name =
+            crate::metadata::generate_clean_filename(&self.original_date, &self.id, &ext);
+        (clean_name, ext)
+    }
 }

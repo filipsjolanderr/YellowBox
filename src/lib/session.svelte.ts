@@ -16,6 +16,14 @@ export class Session {
     parsingProgress = tweened(0, { duration: 400, easing: cubicOut });
     hasAttemptedLoad = $state(false);
 
+    pendingCount = $derived(
+        this.memories.length > 0
+            ? this.memories.filter((m) => m.state === "Pending").length
+            : this.parsedItems.length
+    );
+    downloadedCount = $derived(this.memories.filter((m) => m.state === "Downloaded").length);
+    extractedCount = $derived(this.memories.filter((m) => m.state === "Extracted").length);
+    combinedCount = $derived(this.memories.filter((m) => m.state === "Combined").length);
     completedCount = $derived(this.memories.filter((m) => m.state === "Completed").length);
     failedCount = $derived(this.memories.filter((m) => m.state === "Failed").length);
     totalCount = $derived(this.memories.length > 0 ? this.memories.length : this.parsedItems.length);

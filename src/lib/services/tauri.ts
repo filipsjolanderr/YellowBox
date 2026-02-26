@@ -19,8 +19,16 @@ export const tauriService = {
         });
     },
 
-    async startPipeline(sessionId: string, concurrencyLimit: number, overwriteExisting: boolean): Promise<void> {
-        await invoke("start_pipeline", { sessionId, concurrencyLimit, overwriteExisting });
+    async startPipeline(sessionId: string, overwriteExisting: boolean): Promise<void> {
+        await invoke("start_pipeline", { sessionId, overwriteExisting });
+    },
+
+    async pausePipeline(sessionId: string): Promise<void> {
+        await invoke("pause_pipeline", { sessionId });
+    },
+
+    async retryItem(sessionId: string, itemId: string): Promise<void> {
+        await invoke("retry_item", { sessionId, itemId });
     },
 
     async closeSession(sessionId: string): Promise<void> {
