@@ -1,9 +1,7 @@
 name: 'Release'
 on:
-  push:
-    tags:
-      - 'release-v*'
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
@@ -16,10 +14,13 @@ jobs:
         include:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            binary_path: 'src-tauri/bin/ffmpeg-aarch64-apple-darwin'
           - platform: 'ubuntu-22.04'
             args: ''
+            binary_path: 'src-tauri/bin/ffmpeg-x86_64-unknown-linux-gnu'
           - platform: 'windows-latest'
             args: ''
+            binary_path: 'src-tauri/bin/ffmpeg-x86_64-pc-windows-msvc.exe'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -46,9 +47,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: 'Yellowbox v__VERSION__'
-          releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ github.event.release.id }}
           args: ${{ matrix.args }}
