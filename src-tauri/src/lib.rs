@@ -17,9 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(commands::AppState {
-            db: std::sync::Mutex::new(None),
-            export_path: std::sync::Mutex::new(None),
-            output_dir: std::sync::Mutex::new(None),
+            sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_zip_structure,

@@ -2,126 +2,132 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { parseMemoriesJson, type ParsedMemory } from "$lib/parser";
   import confetti from "canvas-confetti";
-  import {
-    Card,
-    CardTitle,
-    CardDescription,
-    CardContent,
-  } from "$lib/components/ui/card";
   import { toast } from "svelte-sonner";
-  import { CircleAlert } from "lucide-svelte";
   import { tauriService } from "$lib/services/tauri";
   import { appConfig } from "$lib/config.svelte";
-  import { tweened } from "svelte/motion";
-  import { cubicOut } from "svelte/easing";
   import { fade } from "svelte/transition";
+  import { tweened, type Tweened } from "svelte/motion";
+  import type { UnlistenFn } from "@tauri-apps/api/event";
 
   import Header from "$lib/components/Header.svelte";
+  import StatsPanel from "$lib/components/StatsPanel.svelte";
   import SetupCard from "$lib/components/SetupCard.svelte";
   import MemoryGrid from "$lib/components/MemoryGrid.svelte";
+  import { Session } from "$lib/session.svelte";
 
-  let selectedZip = $state<string | null>(null);
-  let selectedOutput = $state<string | null>(null);
-  let parsedItems = $state<ParsedMemory[]>([]);
-  let memories = $state<ParsedMemory[]>([]);
-  let isProcessing = $state(false);
-  let hasAttemptedLoad = $state(false);
+  let tabs = $state<Session[]>([]);
+  let activeTabId = $state<string>("");
+  let activeTab = $derived(tabs.find((t) => t.id === activeTabId) || null);
 
-  let isParsingZip = $state(false);
-  let parsingProgress = tweened(0, { duration: 400, easing: cubicOut });
+  let hasAttemptedAppLoad = $state(false);
 
-  // Derived state to compute progress
-  let completedCount = $derived(
-    memories.filter((m) => m.state === "Completed").length,
-  );
-  let failedCount = $derived(
-    memories.filter((m) => m.state === "Failed").length,
-  );
-  let progressPercentage = $derived(
-    memories.length > 0 ? (completedCount / memories.length) * 100 : 0,
-  );
-  let isAllProcessed = $derived(
-    memories.length > 0 && completedCount + failedCount === memories.length,
+  let listeners = new Map<string, UnlistenFn>();
+
+  // Extract store for Svelte auto-sub handling ($progressStore)
+  let dummyProgress = tweened(0);
+  let progressStore = $derived(
+    activeTab ? activeTab.parsingProgress : dummyProgress,
   );
 
   $effect(() => {
-    // Automatically stop processing spinner if everything is resolved
-    if (isProcessing && isAllProcessed) {
-      isProcessing = false;
-      toast.success("Backup pipeline finished!");
-
-      // Erase persistent db cache from filesystem
-      tauriService.cleanupDatabase().catch(console.error);
-
-      // Trigger organic Confetti victory animation ONLY if all succeeded
-      if (failedCount === 0) {
-        const duration = 2000;
-        const end = Date.now() + duration;
-        const frame = () => {
-          confetti({
-            particleCount: 8,
-            angle: 60,
-            spread: 55,
-            origin: { x: 0, y: 0.6 },
-            colors: ["#22c55e", "#3b82f6", "#fbbf24"],
-          });
-          confetti({
-            particleCount: 8,
-            angle: 120,
-            spread: 55,
-            origin: { x: 1, y: 0.6 },
-            colors: ["#22c55e", "#3b82f6", "#fbbf24"],
-          });
-
-          if (Date.now() < end) {
-            requestAnimationFrame(frame);
-          }
-        };
-        frame();
-      } else {
-        toast.warning(
-          `Backup finished with ${failedCount} errors. Please check the memories marked in red.`,
-        );
-      }
+    if (tabs.length === 0) {
+      handleNewTab();
     }
   });
 
   $effect(() => {
-    let unlistenFn: (() => void) | undefined;
-    tauriService
-      .listenForMemoryUpdates((updatedMemory) => {
-        // Reactively update the memory array using its ID
-        const index = memories.findIndex((m) => m.id === updatedMemory.id);
-        if (index !== -1) {
-          memories[index] = updatedMemory;
-          memories = [...memories]; // trigger re-render
-        }
-      })
-      .then((fn) => {
-        unlistenFn = fn;
-      });
+    // Add missing listeners
+    tabs.forEach((tab) => {
+      if (!listeners.has(tab.id)) {
+        const p = tauriService.listenForMemoryUpdates(
+          tab.id,
+          (updatedMemory) => {
+            const index = tab.memories.findIndex(
+              (m) => m.id === updatedMemory.id,
+            );
+            if (index !== -1) {
+              tab.memories[index] = updatedMemory;
+              tab.memories = [...tab.memories];
+            }
+          },
+        );
+        p.then((fn) => listeners.set(tab.id, fn));
+      }
+    });
 
-    return () => {
-      if (unlistenFn) unlistenFn();
-    };
+    // Cleanup abandoned listeners
+    const currentIds = new Set(tabs.map((t) => t.id));
+    for (const [id, fn] of listeners.entries()) {
+      if (!currentIds.has(id)) {
+        fn();
+        listeners.delete(id);
+      }
+    }
   });
 
+  function handleNewTab() {
+    const id = crypto.randomUUID();
+    const num = tabs.length > 0 ? tabs.length + 1 : 1;
+    const tab = new Session(id, `Backup ${num}`);
+    tabs.push(tab);
+    activeTabId = id;
+  }
+
+  function handleCloseTab(id: string) {
+    tauriService.closeSession(id).catch(console.error);
+    const index = tabs.findIndex((t) => t.id === id);
+    if (index !== -1) {
+      tabs.splice(index, 1);
+      if (activeTabId === id && tabs.length > 0) {
+        activeTabId = tabs[Math.max(0, index - 1)].id;
+      } else if (tabs.length === 0) {
+        handleNewTab(); // Always enforce at least 1 tab visually
+      }
+    }
+  }
+
+  // Monitor active tab completion and emit fireworks + unmark processing processing
   $effect(() => {
-    // Initial Hydration from AppConfig
-    if (!hasAttemptedLoad && appConfig.lastZip && appConfig.lastOutput) {
-      hasAttemptedLoad = true;
-      selectedZip = appConfig.lastZip;
-      selectedOutput = appConfig.lastOutput;
+    // Since we mutate activeTab, assign it locally
+    const tab = activeTab;
+    if (!tab) return;
+
+    if (tab.isProcessing && tab.isAllProcessed) {
+      tab.isProcessing = false;
+      toast.success(`${tab.name} finished!`);
+
+      if (tab.failedCount === 0) {
+        confetti({ particleCount: 16, spread: 55, origin: { x: 0.5, y: 1 } });
+      } else {
+        toast.warning(`${tab.name} finished with error(s). Check red markers.`);
+      }
+    }
+  });
+
+  // Initial app load config hydration on first tab strictly
+  $effect(() => {
+    const tab = tabs[0];
+    if (
+      tabs.length === 1 &&
+      tab &&
+      !hasAttemptedAppLoad &&
+      appConfig.lastZip &&
+      appConfig.lastOutput
+    ) {
+      hasAttemptedAppLoad = true;
+      tab.hasAttemptedLoad = true;
+      tab.selectedZip = appConfig.lastZip;
+      tab.selectedOutput = appConfig.lastOutput;
 
       tauriService
-        .checkZipStructure(selectedZip)
-        .then((jsonContent) => {
-          parsedItems = parseMemoriesJson(jsonContent);
+        .checkZipStructure(tab.id, tab.selectedZip)
+        .then((content) => {
+          tab.parsedItems = parseMemoriesJson(content);
         })
         .catch((err) => {
-          console.error("Failed to auto-reload zip", err);
-          selectedZip = null;
-          selectedOutput = null;
+          console.error("Auto reload zip fail", err);
+          tab.selectedZip = null;
+          tab.selectedOutput = null;
           appConfig.lastZip = null;
           appConfig.lastOutput = null;
           appConfig.save();
@@ -129,19 +135,22 @@
     }
   });
 
+  // Database initialization logic for Active Tab
   $effect(() => {
+    const tab = activeTab;
+    if (!tab) return;
     if (
-      selectedZip &&
-      selectedOutput &&
-      parsedItems.length > 0 &&
-      memories.length === 0
+      tab.selectedZip &&
+      tab.selectedOutput &&
+      tab.parsedItems.length > 0 &&
+      tab.memories.length === 0
     ) {
       tauriService
-        .initializeAndLoad(selectedOutput, parsedItems)
+        .initializeAndLoad(tab.id, tab.selectedOutput, tab.parsedItems)
         .then((items) => {
-          memories = items as ParsedMemory[];
+          tab.memories = items as ParsedMemory[];
           toast.success(
-            `Loaded ${memories.length} memories successfully for backup!`,
+            `Loaded ${tab.memories.length} memories into ${tab.name}!`,
           );
         })
         .catch((err) => toast.error(`DB Init Error: ${err}`));
@@ -149,41 +158,40 @@
   });
 
   async function processZipPath(path: string) {
-    try {
-      isParsingZip = true;
-      parsingProgress.set(0, { duration: 0 });
+    const tab = activeTab;
+    if (!tab) return;
 
-      // Small artificial delay before showing fake progress
+    try {
+      tab.isParsingZip = true;
+      tab.parsingProgress.set(0, { duration: 0 });
+
       await new Promise((r) => setTimeout(r, 600));
 
-      parsingProgress.set(85, { duration: 2500 }); // fake loading progress
+      tab.parsingProgress.set(85, { duration: 2500 });
+      tab.selectedZip = path;
 
-      selectedZip = path;
-      const jsonContent = await tauriService.checkZipStructure(path);
+      const jsonContent = await tauriService.checkZipStructure(tab.id, path);
 
-      parsingProgress.set(95, { duration: 300 });
-      parsedItems = parseMemoriesJson(jsonContent);
+      tab.parsingProgress.set(95, { duration: 300 });
+      tab.parsedItems = parseMemoriesJson(jsonContent);
 
-      if (parsedItems.length === 0) {
-        toast.error("No memories found in the JSON file.");
-        isParsingZip = false;
-        selectedZip = null;
+      if (tab.parsedItems.length === 0) {
+        toast.error("No memories found in JSON array.");
+        tab.isParsingZip = false;
+        tab.selectedZip = null;
       } else {
-        await parsingProgress.set(100, { duration: 500 });
-
-        // Artificial delay at 100% so user sees completion before sudden jump
+        await tab.parsingProgress.set(100, { duration: 500 });
         await new Promise((r) => setTimeout(r, 800));
 
-        toast.success("Successfully Parsed Zip.");
+        toast.success(`${tab.name} Loaded Zip.`);
         appConfig.lastZip = path;
         appConfig.save();
-        isParsingZip = false;
+        tab.isParsingZip = false;
       }
     } catch (err) {
       toast.error(`Error processing zip: ${err}`);
-      console.error(err);
-      selectedZip = null;
-      isParsingZip = false;
+      tab.selectedZip = null;
+      tab.isParsingZip = false;
     }
   }
 
@@ -193,20 +201,22 @@
         directory: false,
         multiple: false,
         filters: [{ name: "Snapchat Data Zip", extensions: ["zip"] }],
-        title: "Select Snapchat Export Zip (e.g. mydata~XXXX.zip)",
+        title: "Select Snapchat Export Zip",
       });
 
-      if (result === null) return;
-
-      const path = Array.isArray(result) ? result[0] : result;
-      await processZipPath(path);
+      if (result) {
+        await processZipPath(Array.isArray(result) ? result[0] : result);
+      }
     } catch (err) {
-      toast.error(`Error opening file dialog: ${err}`);
+      toast.error(`Dialog error: ${err}`);
       console.error(err);
     }
   }
 
   async function handleSelectOutput() {
+    const tab = activeTab;
+    if (!tab) return;
+
     try {
       const result = await open({
         directory: true,
@@ -214,46 +224,39 @@
         title: "Select Output Destination Folder",
       });
 
-      if (result === null) return;
-      selectedOutput = Array.isArray(result) ? result[0] : result;
-      appConfig.lastOutput = selectedOutput;
-      appConfig.save();
+      if (result) {
+        tab.selectedOutput = Array.isArray(result) ? result[0] : result;
+        appConfig.lastOutput = tab.selectedOutput;
+        appConfig.save();
+      }
     } catch (err) {
-      toast.error(`Error: ${err}`);
+      toast.error(`Directory Error: ${err}`);
     }
   }
 
   async function startBackup() {
-    isProcessing = true;
-    toast.info("Starting backup pipeline...");
+    const tab = activeTab;
+    if (!tab) return;
+
+    tab.isProcessing = true;
+    toast.info(`Starting backup pipeline for ${tab.name}...`);
     try {
       await tauriService.startPipeline(
+        tab.id,
         appConfig.concurrencyLimit,
         appConfig.overwriteExisting,
       );
     } catch (err) {
       toast.error(`Pipeline error: ${err}`);
-      isProcessing = false;
+      tab.isProcessing = false;
     }
   }
 
-  async function resetApp() {
-    try {
-      await tauriService.resetApplication();
-      selectedZip = null;
-      selectedOutput = null;
-      parsedItems = [];
-      memories = [];
-      isProcessing = false;
-      appConfig.lastZip = null;
-      appConfig.lastOutput = null;
-      appConfig.save();
-      toast.info(
-        "Session restarted. Please select your ZIP and Output folders again.",
-      );
-    } catch (err) {
-      toast.error(`Reset error: ${err}`);
-    }
+  function togglePause() {
+    const tab = activeTab;
+    if (!tab) return;
+    tab.isPaused = !tab.isPaused;
+    toast.info(tab.isPaused ? `${tab.name} Paused` : `${tab.name} Resumed`);
   }
 </script>
 
@@ -261,44 +264,62 @@
   class="h-screen w-full flex flex-col bg-background text-foreground overflow-hidden font-sans"
 >
   <Header
-    memoriesLength={memories.length > 0 ? memories.length : parsedItems.length}
-    {completedCount}
-    {progressPercentage}
-    {isAllProcessed}
-    {selectedZip}
-    {selectedOutput}
-    {isProcessing}
-    onSelectOutput={handleSelectOutput}
-    onStartBackup={startBackup}
-    onResetApp={resetApp}
+    {tabs}
+    {activeTabId}
+    onTabChange={(id) => (activeTabId = id)}
+    onNewTab={handleNewTab}
+    onCloseTab={handleCloseTab}
   />
 
-  <main class="flex-1 overflow-hidden bg-muted/10 relative">
-    {#if selectedZip && (memories.length > 0 || parsedItems.length > 0) && !isParsingZip}
-      <div
-        in:fade={{ duration: 300, delay: 300 }}
-        out:fade={{ duration: 300 }}
-        class="absolute inset-0"
-      >
-        <MemoryGrid
-          memories={memories.length > 0 ? memories : parsedItems}
-          {selectedOutput}
-        />
-      </div>
-    {:else}
-      <div
-        in:fade={{ duration: 300, delay: 300 }}
-        out:fade={{ duration: 300 }}
-        class="absolute inset-0 flex items-center justify-center"
-      >
-        <SetupCard
-          {selectedZip}
-          isParsing={isParsingZip}
-          progressValue={$parsingProgress}
-          onSelectZip={handleSelectZip}
-          onDropZip={processZipPath}
+  {#if activeTab}
+    {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip}
+      <div in:fade={{ duration: 300, delay: 150 }}>
+        <StatsPanel
+          memories={activeTab.memories}
+          memoriesLength={activeTab.totalCount}
+          completedCount={activeTab.completedCount}
+          progressPercentage={activeTab.progressPercentage}
+          isAllProcessed={activeTab.isAllProcessed}
+          selectedZip={activeTab.selectedZip}
+          selectedOutput={activeTab.selectedOutput}
+          isProcessing={activeTab.isProcessing}
+          isPaused={activeTab.isPaused}
+          onSelectOutput={handleSelectOutput}
+          onStartBackup={startBackup}
+          onTogglePause={togglePause}
         />
       </div>
     {/if}
-  </main>
+
+    <main class="flex-1 overflow-hidden bg-muted/10 relative">
+      {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip}
+        <div
+          in:fade={{ duration: 300, delay: 300 }}
+          out:fade={{ duration: 300 }}
+          class="absolute inset-0"
+        >
+          <MemoryGrid
+            memories={activeTab.memories.length > 0
+              ? activeTab.memories
+              : activeTab.parsedItems}
+            selectedOutput={activeTab.selectedOutput}
+          />
+        </div>
+      {:else}
+        <div
+          in:fade={{ duration: 300, delay: 300 }}
+          out:fade={{ duration: 300 }}
+          class="absolute inset-0 flex items-center justify-center"
+        >
+          <SetupCard
+            selectedZip={activeTab.selectedZip}
+            isParsing={activeTab.isParsingZip}
+            progressValue={$progressStore}
+            onSelectZip={handleSelectZip}
+            onDropZip={processZipPath}
+          />
+        </div>
+      {/if}
+    </main>
+  {/if}
 </div>

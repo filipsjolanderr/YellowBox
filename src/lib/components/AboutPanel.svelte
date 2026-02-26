@@ -9,19 +9,34 @@
     } from "$lib/components/ui/dialog";
     import { Button } from "$lib/components/ui/button";
     import { Info } from "lucide-svelte";
+    import * as Tooltip from "$lib/components/ui/tooltip";
 </script>
 
 <Dialog>
-    <DialogTrigger>
-        <Button
-            variant="ghost"
-            size="icon"
-            class="h-8 w-8 text-muted-foreground hover:text-foreground"
-        >
-            <Info class="h-4 w-4" />
-            <span class="sr-only">About</span>
-        </Button>
-    </DialogTrigger>
+    <Tooltip.Root>
+        <Tooltip.Trigger>
+            {#snippet child({ props: tooltipProps })}
+                <div {...tooltipProps} class="inline-block">
+                    <DialogTrigger>
+                        {#snippet child({ props: dialogProps })}
+                            <Button
+                                {...dialogProps}
+                                variant="ghost"
+                                size="icon"
+                                class="h-8 w-8 text-muted-foreground hover:text-foreground"
+                            >
+                                <Info class="h-4 w-4" />
+                                <span class="sr-only">About</span>
+                            </Button>
+                        {/snippet}
+                    </DialogTrigger>
+                </div>
+            {/snippet}
+        </Tooltip.Trigger>
+        <Tooltip.Content sideOffset={4}>
+            <p>About YellowBox</p>
+        </Tooltip.Content>
+    </Tooltip.Root>
     <DialogContent class="sm:max-w-[425px]">
         <DialogHeader>
             <DialogTitle>About YellowBox</DialogTitle>

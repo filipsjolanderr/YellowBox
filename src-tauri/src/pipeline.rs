@@ -16,6 +16,7 @@ pub struct PipelineService<R: MemoryRepository> {
     pub db: Arc<R>,
     pub app: AppHandle,
     pub dest_dir: PathBuf,
+    pub session_id: String,
 }
 
 impl<R: MemoryRepository> Clone for PipelineService<R> {
@@ -24,13 +25,14 @@ impl<R: MemoryRepository> Clone for PipelineService<R> {
             db: Arc::clone(&self.db),
             app: self.app.clone(),
             dest_dir: self.dest_dir.clone(),
+            session_id: self.session_id.clone(),
         }
     }
 }
 
 impl<R: MemoryRepository + 'static> PipelineService<R> {
-    pub fn new(db: Arc<R>, app: AppHandle, dest_dir: PathBuf) -> Self {
-        Self { db, app, dest_dir }
+    pub fn new(db: Arc<R>, app: AppHandle, dest_dir: PathBuf, session_id: String) -> Self {
+        Self { db, app, dest_dir, session_id }
     }
 
     pub async fn process_all(
@@ -83,7 +85,7 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
                     current_item.extension.clone(),
                     Some(current_item.has_overlay),
                 );
-                let _ = self.app.emit("memory-updated", current_item.clone());
+                let _ = self.app.emit(&format!("memory-updated-{}", self.session_id), current_item.clone());
             }};
         }
 

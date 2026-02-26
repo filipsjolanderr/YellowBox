@@ -64,3 +64,91 @@ fn test_parse_location_extra_spaces() {
         Some((80.0, -12.0))
     );
 }
+
+#[tokio::test]
+async fn test_apply_image_location_metadata() {
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_metadata_image.jpg");
+
+    // 1. Create a blank image using the `image` crate
+    let img = image::RgbImage::new(10, 10);
+    img.save(&file_path).unwrap();
+
+    // 2. Apply metadata
+    let lat = 40.7128;
+    let lon = -74.0060;
+    metadata::apply_image_location_metadata(&file_path, lat, lon)
+        .await
+        .unwrap();
+
+    // 3. Read metadata back
+    // little_exif might not expose easy getter structs, so we verify by parsing using little_exif 
+    // and asserting it compiles, then we can read the raw bytes to ensure our EXIF payload is there.
+    let parsed_metadata = little_exif::metadata::Metadata::new_from_path(&file_path);
+    assert!(parsed_metadata.is_ok(), "Failed to read the written EXIF metadata!");
+
+    let raw_bytes = std::fs::read(&file_path).unwrap();
+    // EXIF header includes 'Exif\0\0'
+    let has_exif = raw_bytes.windows(4).any(|window| window == b"Exif");
+    assert!(has_exif, "EXIF header not found in the output JPEG");
+
+    let _ = std::fs::remove_file(file_path);
+}
+
+#[tokio::test]
+async fn test_apply_video_location_metadata() {
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join("test_metadata_video.mp4");
+
+    // 1. Create a blank video using ffmpeg
+    let create_cmd = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-f", "lavfi",
+            "-i", "color=c=black:s=16x16:d=1",
+            "-c:v", "libx264",
+            "-t", "1",
+            "-y",
+            file_path.to_str().unwrap()
+        ])
+        .output()
+        .await
+        .unwrap();
+    
+    assert!(create_cmd.status.success(), "Failed to create dummy video!");
+
+    // 2. Apply metadata using our extracted args
+    let lat = 40.7128;
+    let lon = -74.0060;
+    let temp_dest = file_path.with_extension("tmp.mp4");
+    
+    let args = metadata::get_ffmpeg_location_args(&file_path, &temp_dest, lat, lon);
+    
+    let output = tokio::process::Command::new("ffmpeg")
+        .args(args)
+        .output()
+        .await
+        .unwrap();
+        
+    assert!(output.status.success(), "Failed to write metadata with ffmpeg!");
+    if temp_dest.exists() {
+        tokio::fs::rename(&temp_dest, &file_path).await.unwrap();
+    }
+
+    // 3. Verify metadata using ffprobe
+    let probe_output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v", "quiet",
+            "-show_format",
+            "-show_streams",
+            "-print_format", "json",
+            file_path.to_str().unwrap()
+        ])
+        .output()
+        .await
+        .unwrap();
+        
+    let output_str = String::from_utf8(probe_output.stdout).unwrap();
+    assert!(output_str.contains("+40.7128-074.0060/"), "Metadata not found in the ffprobe output:\n{}", output_str);
+
+    let _ = std::fs::remove_file(file_path);
+}

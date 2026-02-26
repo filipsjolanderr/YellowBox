@@ -2,19 +2,31 @@
     import { Moon, Sun } from "lucide-svelte";
     import { toggleMode } from "mode-watcher";
     import { Button } from "$lib/components/ui/button";
+    import * as Tooltip from "$lib/components/ui/tooltip";
 </script>
 
-<Button
-    variant="ghost"
-    size="icon"
-    class="h-8 w-8 text-muted-foreground hover:text-foreground"
-    onclick={toggleMode}
->
-    <Sun
-        class="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0"
-    />
-    <Moon
-        class="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100"
-    />
-    <span class="sr-only">Toggle theme</span>
-</Button>
+<Tooltip.Root>
+    <Tooltip.Trigger>
+        {#snippet child({ props: tooltipProps })}
+            <div {...tooltipProps} class="inline-block">
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    class="h-8 w-8 text-muted-foreground hover:text-foreground"
+                    onclick={toggleMode}
+                >
+                    <Sun
+                        class="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0"
+                    />
+                    <Moon
+                        class="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100"
+                    />
+                    <span class="sr-only">Toggle theme</span>
+                </Button>
+            </div>
+        {/snippet}
+    </Tooltip.Trigger>
+    <Tooltip.Content sideOffset={4}>
+        <p>Switch Theme</p>
+    </Tooltip.Content>
+</Tooltip.Root>

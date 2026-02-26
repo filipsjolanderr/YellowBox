@@ -15,9 +15,7 @@
     import { Settings, RotateCcw } from "lucide-svelte";
     import { appConfig } from "$lib/config.svelte";
 
-    let { onResetApp } = $props<{
-        onResetApp?: () => void;
-    }>();
+    import * as Tooltip from "$lib/components/ui/tooltip";
 
     let open = $state(false);
 
@@ -32,16 +30,30 @@
 </script>
 
 <Dialog bind:open>
-    <DialogTrigger>
-        <Button
-            variant="ghost"
-            size="icon"
-            class="h-8 w-8 text-muted-foreground hover:text-foreground relative group"
-        >
-            <Settings class="h-4 w-4" />
-            <span class="sr-only">Settings</span>
-        </Button>
-    </DialogTrigger>
+    <Tooltip.Root>
+        <Tooltip.Trigger>
+            {#snippet child({ props: tooltipProps })}
+                <div {...tooltipProps} class="inline-block">
+                    <DialogTrigger>
+                        {#snippet child({ props: dialogProps })}
+                            <Button
+                                {...dialogProps}
+                                variant="ghost"
+                                size="icon"
+                                class="h-8 w-8 text-muted-foreground hover:text-foreground relative group"
+                            >
+                                <Settings class="h-4 w-4" />
+                                <span class="sr-only">Settings</span>
+                            </Button>
+                        {/snippet}
+                    </DialogTrigger>
+                </div>
+            {/snippet}
+        </Tooltip.Trigger>
+        <Tooltip.Content sideOffset={4}>
+            <p>Settings & Configuration</p>
+        </Tooltip.Content>
+    </Tooltip.Root>
     <DialogContent>
         <DialogHeader>
             <DialogTitle>Configuration</DialogTitle>
@@ -92,20 +104,9 @@
                     bind:checked={appConfig.overwriteExisting}
                 />
             </div>
-            <Button
-                variant="destructive"
-                onclick={() => {
-                    if (onResetApp) onResetApp();
-                    open = false;
-                }}
-                class="w-full sm:w-auto"
-            >
-                <RotateCcw class="mr-2 h-4 w-4" />
-                Reset Application Session
-            </Button>
         </div>
         <DialogFooter>
-            <div class="flex space-x-2 w-full sm:w-auto mt-2 sm:mt-0">
+            <div class="flex space-x-2 w-full mt-2 sm:mt-0 justify-end">
                 <Button variant="outline" onclick={handleReset}
                     >Reset Defaults</Button
                 >

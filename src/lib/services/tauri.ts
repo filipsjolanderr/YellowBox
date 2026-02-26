@@ -3,31 +3,32 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ParsedMemory } from "$lib/parser";
 
 export const tauriService = {
-    async cleanupDatabase(): Promise<void> {
-        await invoke("cleanup_database");
+    async cleanupDatabase(sessionId: string): Promise<void> {
+        await invoke("cleanup_database", { sessionId });
     },
 
-    async checkZipStructure(path: string): Promise<string> {
-        return await invoke<string>("check_zip_structure", { path });
+    async checkZipStructure(sessionId: string, path: string): Promise<string> {
+        return await invoke<string>("check_zip_structure", { sessionId, path });
     },
 
-    async initializeAndLoad(outputPath: string, items: ParsedMemory[]): Promise<ParsedMemory[]> {
+    async initializeAndLoad(sessionId: string, outputPath: string, items: ParsedMemory[]): Promise<ParsedMemory[]> {
         return await invoke<ParsedMemory[]>("initialize_and_load", {
+            sessionId,
             outputPath,
             items,
         });
     },
 
-    async startPipeline(concurrencyLimit: number, overwriteExisting: boolean): Promise<void> {
-        await invoke("start_pipeline", { concurrencyLimit, overwriteExisting });
+    async startPipeline(sessionId: string, concurrencyLimit: number, overwriteExisting: boolean): Promise<void> {
+        await invoke("start_pipeline", { sessionId, concurrencyLimit, overwriteExisting });
     },
 
-    async resetApplication(): Promise<void> {
-        await invoke("reset_application");
+    async closeSession(sessionId: string): Promise<void> {
+        await invoke("reset_application", { sessionId });
     },
 
-    async listenForMemoryUpdates(callback: (memory: ParsedMemory) => void): Promise<UnlistenFn> {
-        return await listen<ParsedMemory>("memory-updated", (event) => {
+    async listenForMemoryUpdates(sessionId: string, callback: (memory: ParsedMemory) => void): Promise<UnlistenFn> {
+        return await listen<ParsedMemory>(`memory-updated-${sessionId}`, (event) => {
             callback(event.payload);
         });
     },
