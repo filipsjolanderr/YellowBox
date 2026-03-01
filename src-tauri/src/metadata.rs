@@ -21,10 +21,18 @@ pub async fn set_file_times(path: &Path, date_str: &str) -> crate::error::Result
 }
 
 pub fn parse_location(location: &str) -> Option<(f32, f32)> {
-    let parts: Vec<&str> = location.split(',').collect();
-    if parts.len() == 2 {
-        let lat = parts[0].trim().parse::<f32>().ok()?;
-        let lon = parts[1].trim().parse::<f32>().ok()?;
+    // Strip "Latitude, Longitude: " prefix used by Snapchat exports
+    let s = location
+        .trim()
+        .strip_prefix("Latitude, Longitude:")
+        .unwrap_or(location)
+        .trim();
+
+    let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+    if parts.len() >= 2 {
+        // Take last two parts (handles "lat, lon" and "Latitude, Longitude: lat, lon")
+        let lat = parts[parts.len() - 2].parse::<f32>().ok()?;
+        let lon = parts[parts.len() - 1].parse::<f32>().ok()?;
         Some((lat, lon))
     } else {
         None
@@ -49,12 +57,13 @@ pub fn get_ffmpeg_location_args(path: &Path, temp_dest: &Path, lat: f32, lon: f3
 
 pub async fn apply_image_location_metadata(path: &Path, lat: f32, lon: f32) -> crate::error::Result<()> {
     let path_buf = path.to_path_buf();
-    let _ = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         use little_exif::exif_tag::ExifTag;
         use little_exif::metadata::Metadata;
         use little_exif::rational::uR64;
 
-        let mut metadata = Metadata::new();
+        // Load existing metadata to preserve it when present; fall back to empty for images without EXIF
+        let mut metadata = Metadata::new_from_path(&path_buf).unwrap_or_else(|_| Metadata::new());
 
         let lat_ref = if lat < 0.0 { "S" } else { "N" };
         let lon_ref = if lon < 0.0 { "W" } else { "E" };
@@ -84,11 +93,12 @@ pub async fn apply_image_location_metadata(path: &Path, lat: f32, lon: f32) -> c
             uR64 { nominator: lon_sec as u32, denominator: 1000 },
         ]));
 
-        let _ = metadata.write_to_file(&path_buf);
+        metadata
+            .write_to_file(&path_buf)
+            .map_err(|e| AppError::Metadata(format!("Failed to write EXIF GPS metadata: {}", e)))
     })
-    .await;
-
-    Ok(())
+    .await
+    .map_err(|e| AppError::Internal(format!("Metadata task panicked: {}", e)))?
 }
 
 pub async fn apply_location_metadata(

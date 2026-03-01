@@ -65,6 +65,19 @@ fn test_parse_location_extra_spaces() {
     );
 }
 
+#[test]
+fn test_parse_location_snapchat_format() {
+    // Snapchat exports use "Latitude, Longitude: lat, lon" format
+    assert_eq!(
+        metadata::parse_location("Latitude, Longitude: 57.686493, 11.977872"),
+        Some((57.686493, 11.977872))
+    );
+    assert_eq!(
+        metadata::parse_location("Latitude, Longitude: 55.6709, 12.576744"),
+        Some((55.6709, 12.576744))
+    );
+}
+
 #[tokio::test]
 async fn test_apply_image_location_metadata() {
     let temp_dir = std::env::temp_dir();

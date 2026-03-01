@@ -233,9 +233,8 @@ impl<R: MemoryRepository + 'static> PipelineService<R> {
             if let Some(ref loc) = item.location {
                 let (_, ext) = item.generated_filename_and_ext();
                 let is_video = is_video_ext(&ext);
-                if let Err(e) = metadata::apply_location_metadata(&self.app, final_file, loc, is_video).await {
-                    eprintln!("Warning: Failed to apply location metadata: {}", e);
-                }
+                metadata::apply_location_metadata(&self.app, final_file, loc, is_video).await
+                    .map_err(|e| crate::error::AppError::Metadata(format!("Failed to apply GPS metadata: {}", e)))?;
             }
 
             metadata::set_file_times(final_file, &item.original_date).await.map_err(|e| crate::error::AppError::Metadata(e.to_string()))?;
