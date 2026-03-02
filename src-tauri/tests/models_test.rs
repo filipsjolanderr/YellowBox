@@ -40,6 +40,7 @@ fn test_memory_item_serialization() {
         error_message: None,
         extension: Some("mp4".to_string()),
         has_overlay: true,
+        has_thumbnail: false,
         media_type: "video".to_string(),
     };
 
@@ -64,6 +65,7 @@ fn test_memory_item_default_extension_optional() {
         "errorMessage": null,
         "extension": null,
         "hasOverlay": false,
+        "hasThumbnail": false,
         "mediaType": "image"
     }"#;
     let item: MemoryItem = serde_json::from_str(json).unwrap();

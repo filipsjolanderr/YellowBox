@@ -27,6 +27,7 @@ async fn test_end_to_end_extraction_pipeline() {
         error_message: None,
         extension: Some("jpg".to_string()),
         has_overlay: false,
+        has_thumbnail: false,
         media_type: "Image".to_string(),
     };
     
@@ -62,7 +63,7 @@ async fn test_end_to_end_extraction_pipeline() {
     assert!(combined_dest.exists(), "Combined file not created");
     
     // Update State
-    db_manager.update_state(&memory_id, ProcessingState::Completed, None, Some("jpg".to_string()), Some(false)).await.unwrap();
+    db_manager.update_state(&memory_id, ProcessingState::Completed, None, Some("jpg".to_string()), Some(false), Some(false)).await.unwrap();
     
     // Verify State Check
     let memories = db_manager.get_all_memories().await.unwrap();
