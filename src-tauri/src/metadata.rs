@@ -127,7 +127,9 @@ pub async fn apply_location_metadata(
         if output.status.success() && temp_dest.exists() {
             let _ = tokio::fs::rename(&temp_dest, path).await;
         } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             let _ = tokio::fs::remove_file(&temp_dest).await;
+            return Err(AppError::Metadata(format!("FFmpeg metadata application failed: {}", stderr)));
         }
     } else {
         // Use little_exif for images (jpg) natively
@@ -144,4 +146,11 @@ pub fn generate_clean_filename(date_str: &str, id: &str, ext: &str) -> String {
         .replace(":", "-")
         .replace(" ", "_");
     format!("{}_{}.{}", clean_date, id, ext)
+}
+
+pub fn get_clean_date_prefix(date_str: &str) -> String {
+    date_str
+        .replace(" UTC", "")
+        .replace(":", "-")
+        .replace(" ", "_")
 }

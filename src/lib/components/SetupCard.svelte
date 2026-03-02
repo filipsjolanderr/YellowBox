@@ -13,6 +13,7 @@
     import { getCurrentWindow } from "@tauri-apps/api/window";
     import { Progress } from "$lib/components/ui/progress";
     import { slide } from "svelte/transition";
+    import DataRequestGuide from "./DataRequestGuide.svelte";
 
     let { selectedZip, isParsing, progressValue, onSelectZip, onDropZip } =
         $props<{
@@ -74,7 +75,7 @@
         </CardHeader>
 
         <CardContent
-            class="flex flex-col gap-5 pt-0 pb-6 w-full transition-all duration-300"
+            class="flex flex-col gap-5 pt-0 w-full transition-all duration-300"
         >
             <button
                 onclick={onSelectZip}
@@ -120,6 +121,10 @@
                     >
                 {/if}
             </button>
+
+            <div class="flex justify-center -mt-2 pt-4">
+                <DataRequestGuide />
+            </div>
 
             {#if isParsing}
                 <div class="w-full mt-2" transition:slide={{ duration: 300 }}>

@@ -110,8 +110,18 @@ jobs:
               console.log(`Renaming ${assetPath} to ${newPath}`);
               fs.renameSync(assetPath, newPath);
               
-              console.log(`Uploading ${newPath} to release ${tag_name}`);
-              execSync(`gh release upload ${tag_name} "${newPath}" --clobber`, { 
+              let uploadPath = newPath;
+              // .app on macOS is a directory - zip it for GitHub upload
+              if (parsed.ext === '.app' && fs.statSync(newPath).isDirectory()) {
+                const zipName = `${parsed.name}-${os_name}.zip`;
+                const zipPath = path.join(parsed.dir, zipName);
+                console.log(`Zipping ${newPath} to ${zipPath}`);
+                execSync(`cd "${parsed.dir}" && zip -r "${zipName}" "${path.basename(newPath)}"`, { stdio: 'inherit' });
+                uploadPath = zipPath;
+              }
+              
+              console.log(`Uploading ${uploadPath} to release ${tag_name}`);
+              execSync(`gh release upload ${tag_name} "${uploadPath}" --clobber`, { 
                 stdio: 'inherit',
                 env: process.env 
               });

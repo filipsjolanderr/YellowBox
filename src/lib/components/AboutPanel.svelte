@@ -40,7 +40,7 @@
     <DialogContent class="sm:max-w-[425px]">
         <DialogHeader>
             <DialogTitle>About YellowBox</DialogTitle>
-            <DialogDescription>v0.1.0-alpha</DialogDescription>
+            <DialogDescription>v0.1.0</DialogDescription>
         </DialogHeader>
         <div class="py-4">
             <p class="text-sm text-foreground mb-4 font-medium">

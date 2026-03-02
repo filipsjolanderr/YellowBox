@@ -15,6 +15,17 @@
     export let sessionId: string;
     export let memory: ParsedMemory;
     export let selectedOutput: string | null;
+    export let resolvedLocalPath: string | undefined = undefined;
+    export let isProcessing = false;
+    export let isAllProcessed = false;
+
+    let localFallbackIndex = 0;
+    let hasLoadedSuccessfully = false;
+    const LOCAL_FALLBACKS: ((m: ParsedMemory) => string)[] = [
+        getFinalSrcFallback,
+        getLocalMainSrc,
+        getLocalMainSrcFallback,
+    ];
 
     $: isDone = memory.state === "Completed" || memory.state === "Combined";
     $: isExtracted = memory.state === "Extracted";
@@ -23,12 +34,20 @@
         (!memory.extension &&
             memory.downloadUrl.toLowerCase().includes(".zip"));
 
-    $: videoSrc = isDone
-        ? getFinalSrc(memory)
-        : isExtracted
-          ? getLocalMainSrc(memory)
-          : isZip
-            ? ""
+    $: thumbnailSrc =
+        selectedOutput && (memory as any).hasThumbnail
+            ? tauriService.getConvertedSrc(
+                  selectedOutput.replace(/\\/g, "/") + `/.thumbs/${memory.id}.jpg`,
+              )
+            : "";
+
+    // Prefer backend-resolved path when available; otherwise try guessed paths
+    $: videoSrc = isZip
+        ? ""
+        : resolvedLocalPath
+          ? tauriService.getConvertedSrc(resolvedLocalPath)
+          : selectedOutput
+            ? getFinalSrc(memory)
             : `${memory.downloadUrl}#t=0.5`;
 
     function lazyLoadVideo(node: HTMLVideoElement, src: string) {
@@ -81,6 +100,12 @@
         }
     }
 
+    function toLocalPath(filename: string): string {
+        if (!selectedOutput) return "";
+        const base = selectedOutput.replace(/\\/g, "/");
+        return `${base}/${filename}`;
+    }
+
     function getFinalSrc(memory: ParsedMemory) {
         if (!selectedOutput) return "";
         const cleanDate = memory.originalDate
@@ -89,34 +114,48 @@
             .replace(/ /g, "_");
         const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
         const filename = `${cleanDate}_${memory.id}.${ext}`;
-        return tauriService.getConvertedSrc(`${selectedOutput}/${filename}`);
+        return tauriService.getConvertedSrc(toLocalPath(filename));
     }
 
     function getLocalMainSrc(memory: ParsedMemory) {
         if (!selectedOutput) return "";
         const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
-        return tauriService.getConvertedSrc(
-            `${selectedOutput}/${memory.id}-main.${ext}`,
-        );
+        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}-main.${ext}`));
+    }
+
+    function getLocalMainSrcFallback(memory: ParsedMemory) {
+        if (!selectedOutput) return "";
+        const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
+        const cleanDate = memory.originalDate
+            .replace(" UTC", "")
+            .replace(/:/g, "-")
+            .replace(/ /g, "_");
+        return tauriService.getConvertedSrc(toLocalPath(`${cleanDate}_${memory.id}-main.${ext}`));
+    }
+
+    function getFinalSrcFallback(memory: ParsedMemory) {
+        if (!selectedOutput) return "";
+        const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
+        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}.${ext}`));
     }
 
     function getOverlaySrc(memory: ParsedMemory) {
         if (!selectedOutput) return "";
-        return tauriService.getConvertedSrc(
-            `${selectedOutput}/${memory.id}-overlay.png`,
-        );
+        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}-overlay.png`));
     }
 
     function isMaybeVideo(memory: ParsedMemory) {
         if (memory.mediaType === "Video") return true;
         if (memory.extension) {
-            return ["mp4", "mov"].includes(memory.extension.toLowerCase());
+            const lowExt = memory.extension.toLowerCase();
+            return ["mp4", "mov", "m4v", "mkv"].includes(lowExt);
         }
         const url = memory.downloadUrl.toLowerCase();
         return (
             url.includes(".mp4") ||
             url.includes(".mov") ||
-            url.includes("video")
+            url.includes("video") ||
+            url.includes("m4v")
         );
     }
 
@@ -140,90 +179,112 @@
     class="group relative overflow-hidden transition-all hover:border-primary/50 hover:shadow-sm rounded-[4px] border border-border/50 p-0"
 >
     <div class="aspect-[9/16] bg-black/5 relative overflow-hidden">
+        {#if thumbnailSrc}
+            <img
+                src={thumbnailSrc}
+                alt="Preview"
+                class="absolute inset-0 h-full w-full object-cover z-0"
+            />
+        {/if}
+
         {#if isMaybeVideo(memory)}
             <video
                 use:lazyLoadVideo={videoSrc}
-                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {isDone
+                poster={thumbnailSrc}
+                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {(isAllProcessed && !isProcessing)
                     ? 'opacity-100 grayscale-0 z-10'
-                    : 'opacity-0 grayscale group-hover:grayscale-0'}"
+                    : 'opacity-0 grayscale group-hover:grayscale-0 z-10'}"
                 preload="none"
                 muted
                 playsinline
                 onloadeddata={(e) => {
+                    hasLoadedSuccessfully = true;
                     const vid = e.currentTarget as HTMLVideoElement;
-                    if (!isDone) {
+                    vid.style.display = "";
+                    if (!isAllProcessed || isProcessing) {
                         vid.classList.remove("opacity-0");
                         vid.classList.add(
                             "opacity-50",
                             "group-hover:opacity-100",
                         );
                     }
-                    if (vid.previousElementSibling && !isDone) {
-                        (
-                            vid.previousElementSibling as HTMLElement
-                        ).style.opacity = "0";
-                    }
                 }}
                 onerror={(e) => {
                     const vid = e.currentTarget as HTMLVideoElement;
-                    // Retry without timestamp or fallback to remote
+                    // Retry without timestamp
                     if (vid.src.includes("#t=")) {
                         vid.src = vid.src.split("#")[0];
                         vid.load();
-                    } else if (
-                        (isDone || isExtracted) &&
-                        vid.src !== memory.downloadUrl
-                    ) {
+                        return;
+                    }
+                    const hasLocalSource = resolvedLocalPath || selectedOutput;
+                    // Try next local path in cascade before remote
+                    if (selectedOutput && localFallbackIndex < LOCAL_FALLBACKS.length) {
+                        const fallback = LOCAL_FALLBACKS[localFallbackIndex](memory);
+                        localFallbackIndex += 1;
+                        if (fallback && vid.src !== fallback) {
+                            vid.src = fallback;
+                            vid.load();
+                            return;
+                        }
+                    }
+                    // Fall back to remote when local failed (resolvedLocalPath or selectedOutput)
+                    if (hasLocalSource && vid.src !== memory.downloadUrl) {
                         console.warn(
                             `Local video failed for ${memory.id}, falling back to remote`,
                         );
                         vid.src = `${memory.downloadUrl}#t=0.5`;
                         vid.load();
-                    } else {
+                    } else if (!hasLoadedSuccessfully) {
                         vid.style.display = "none";
                     }
                 }}
             ></video>
         {:else}
             <img
-                src={isDone
-                    ? getFinalSrc(memory)
-                    : isExtracted
-                      ? getLocalMainSrc(memory)
-                      : isZip
-                        ? ""
+                src={isZip
+                    ? ""
+                    : resolvedLocalPath
+                      ? tauriService.getConvertedSrc(resolvedLocalPath)
+                      : selectedOutput
+                        ? getFinalSrc(memory)
                         : memory.downloadUrl}
                 alt="Memory"
-                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {isDone
+                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {(isAllProcessed && !isProcessing)
                     ? 'opacity-100 grayscale-0 z-10'
-                    : 'opacity-0 grayscale group-hover:grayscale-0'}"
+                    : 'opacity-0 grayscale group-hover:grayscale-0 z-10'}"
                 loading="lazy"
                 onload={(e) => {
+                    hasLoadedSuccessfully = true;
                     const img = e.currentTarget as HTMLImageElement;
-                    if (!isDone) {
+                    img.style.display = "";
+                    if (!isAllProcessed || isProcessing) {
                         img.classList.remove("opacity-0");
                         img.classList.add(
                             "opacity-50",
                             "group-hover:opacity-100",
                         );
                     }
-                    if (img.previousElementSibling && !isDone) {
-                        (
-                            img.previousElementSibling as HTMLElement
-                        ).style.opacity = "0";
-                    }
                 }}
                 onerror={(e) => {
                     const img = e.currentTarget as HTMLImageElement;
-                    if (
-                        (isDone || isExtracted) &&
-                        img.src !== memory.downloadUrl
-                    ) {
+                    const hasLocalSource = resolvedLocalPath || selectedOutput;
+                    // Try next local path in cascade before remote
+                    if (selectedOutput && localFallbackIndex < LOCAL_FALLBACKS.length) {
+                        const fallback = LOCAL_FALLBACKS[localFallbackIndex](memory);
+                        localFallbackIndex += 1;
+                        if (fallback && img.src !== fallback) {
+                            img.src = fallback;
+                            return;
+                        }
+                    }
+                    // Fall back to remote when local failed (resolvedLocalPath or selectedOutput)
+                    if (hasLocalSource && img.src !== memory.downloadUrl) {
                         console.warn(
                             `Local image failed for ${memory.id}, falling back to remote`,
                         );
                         img.src = memory.downloadUrl;
-                    } else {
+                    } else if (!hasLoadedSuccessfully) {
                         img.style.display = "none";
                     }
                 }}
@@ -258,24 +319,24 @@
 
         {#if memory.errorMessage}
             <div
-                class="absolute inset-x-0 bottom-0 top-1/2 z-30 flex flex-col justify-end bg-gradient-to-t from-red-900/90 to-red-500/10 pointer-events-auto overflow-hidden rounded-b-[4px]"
+                class="absolute inset-x-0 bottom-0 top-1/2 z-30 flex flex-col justify-end bg-gradient-to-t from-red-900/95 to-red-500/20 pointer-events-auto overflow-hidden rounded-b-[4px]"
             >
                 <div
-                    class="text-white text-[9px] p-2 leading-tight font-medium max-h-full overflow-y-auto w-full flex flex-col justify-between h-full"
+                    class="text-white text-[9px] p-2 leading-tight font-medium max-h-full overflow-y-auto w-full flex flex-col justify-end gap-2 h-full"
                 >
-                    <div>
+                    <button
+                        onclick={handleRetry}
+                        class="mb-1 flex items-center justify-center gap-1 rounded bg-red-600 hover:bg-red-500 p-1.5 text-white transition-colors cursor-pointer shadow-sm font-bold uppercase tracking-tighter"
+                    >
+                        <RefreshCw class="h-3 w-3" /> Retry Item
+                    </button>
+                    <div class="opacity-90">
                         <span
-                            class="font-bold flex items-center mb-1 text-red-100"
+                            class="font-bold flex items-center mb-0.5 text-red-100"
                             ><CircleAlert class="h-3 w-3 mr-1" /> Error</span
                         >
                         {memory.errorMessage}
                     </div>
-                    <button
-                        onclick={handleRetry}
-                        class="mt-2 flex items-center justify-center gap-1 rounded bg-white/20 hover:bg-white/30 p-1 text-white transition-colors cursor-pointer"
-                    >
-                        <RefreshCw class="h-3 w-3" /> Retry
-                    </button>
                 </div>
             </div>
         {/if}

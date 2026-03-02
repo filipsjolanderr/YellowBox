@@ -48,6 +48,7 @@
             if (index !== -1) {
               tab.memories[index] = updatedMemory;
               tab.memories = [...tab.memories];
+              // Don't refresh resolved paths - avoids reloading previews during backup
             }
           },
         );
@@ -94,12 +95,25 @@
 
     if (tab.isProcessing && tab.isAllProcessed) {
       tab.isProcessing = false;
-      toast.success(`${tab.name} finished!`);
+      tauriService.clearPreviewTemp(tab.id).catch(() => {});
 
       if (tab.failedCount === 0) {
-        confetti({ particleCount: 16, spread: 55, origin: { x: 0.5, y: 1 } });
+        toast.success(`${tab.name} Backup Successful! ✨`);
+        confetti({
+          particleCount: 150,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ["#FFFC00", "#ffffff", "#000000"], // Snapchat colors
+        });
       } else {
-        toast.warning(`${tab.name} finished with error(s). Check red markers.`);
+        toast.warning(
+          `${tab.name} finished with ${tab.failedCount} error(s).`,
+          {
+            description:
+              "Some items could not be backed up. Click 'Retry' on red items to fix.",
+            duration: 6000,
+          },
+        );
       }
     }
   });
@@ -152,6 +166,7 @@
           toast.success(
             `Loaded ${tab.memories.length} memories into ${tab.name}!`,
           );
+          // Don't re-resolve paths - keeps existing temp previews, no reload
         })
         .catch((err) => toast.error(`DB Init Error: ${err}`));
     }
@@ -187,6 +202,16 @@
         appConfig.lastZip = path;
         appConfig.save();
         tab.isParsingZip = false;
+
+        // Extract media to temp folder for local previews (no CDN)
+        const ids = tab.parsedItems.map((m) => m.id);
+        try {
+          await tauriService.extractPreviewMedia(tab.id, path, ids);
+          const paths = await tauriService.resolveLocalMediaPaths(tab.id, ids);
+          tab.resolvedLocalPaths = paths;
+        } catch (e) {
+          console.warn("Preview extraction failed, will use remote URLs:", e);
+        }
       }
     } catch (err) {
       toast.error(`Error processing zip: ${err}`);
@@ -310,6 +335,9 @@
               ? activeTab.memories
               : activeTab.parsedItems}
             selectedOutput={activeTab.selectedOutput}
+            resolvedLocalPaths={activeTab.resolvedLocalPaths}
+            isProcessing={activeTab.isProcessing}
+            isAllProcessed={activeTab.isAllProcessed}
           />
         </div>
       {:else}

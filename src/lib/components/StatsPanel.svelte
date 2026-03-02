@@ -89,17 +89,19 @@
                     <Button
                         variant="outline"
                         onclick={onSelectOutput}
-                        class="border-primary/50 text-foreground"
+                        class="pulse-glow border-2 border-primary text-primary font-semibold shadow-md ring-2 ring-primary/20 hover:ring-primary/40 hover:bg-primary/5 min-w-[200px]"
                     >
+                        <FolderOpen class="mr-2 h-4 w-4" />
                         Select Destination Folder
                     </Button>
                 {:else}
                     <Button
                         variant="outline"
                         onclick={onSelectOutput}
-                        class="text-xs truncate max-w-xs font-mono"
+                        class="text-xs truncate max-w-xs font-mono border-primary/40 bg-primary/5 hover:bg-primary/10"
                         title={selectedOutput}
                     >
+                        <FolderOpen class="mr-1.5 h-3.5 w-3.5 shrink-0" />
                         {selectedOutput}
                     </Button>
                     {#if isProcessing}
@@ -142,7 +144,7 @@
                     {:else}
                         <Button
                             onclick={onStartBackup}
-                            class="bg-primary text-primary-foreground hover:bg-primary/90 min-w-[140px]"
+                            class="pulse-glow bg-primary text-primary-foreground hover:bg-primary/90 min-w-[140px] font-semibold shadow-md ring-2 ring-primary/30 hover:ring-primary/50"
                         >
                             <Play class="mr-2 h-4 w-4" />
                             Start Backup

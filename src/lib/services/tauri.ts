@@ -19,6 +19,26 @@ export const tauriService = {
         });
     },
 
+    async clearPreviewTemp(sessionId: string): Promise<void> {
+        await invoke("clear_preview_temp", { sessionId });
+    },
+
+    async extractPreviewMedia(sessionId: string, zipPath: string, memoryIds: string[]): Promise<string> {
+        return await invoke<string>("extract_preview_media", {
+            sessionId,
+            zipPath,
+            memoryIds,
+        });
+    },
+
+    async resolveLocalMediaPaths(sessionId: string, memoryIds: string[]): Promise<Record<string, string>> {
+        const result = await invoke<Record<string, string>>("resolve_local_media_paths", {
+            sessionId,
+            memoryIds,
+        });
+        return result ?? {};
+    },
+
     async startPipeline(sessionId: string, overwriteExisting: boolean): Promise<void> {
         await invoke("start_pipeline", { sessionId, overwriteExisting });
     },

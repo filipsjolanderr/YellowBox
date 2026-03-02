@@ -10,6 +10,7 @@ export class Session {
     selectedOutput: string | null = $state(null);
     parsedItems: ParsedMemory[] = $state([]);
     memories: ParsedMemory[] = $state([]);
+    resolvedLocalPaths: Record<string, string> = $state({});
     isProcessing = $state(false);
     isPaused = $state(false);
     isParsingZip = $state(false);

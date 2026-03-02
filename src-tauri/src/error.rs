@@ -32,6 +32,9 @@ pub enum AppError {
     #[error("Missing downloaded file: {0}")]
     MissingFile(String),
 
+    #[error("Extraction error: {0}")]
+    Extraction(String),
+
     #[error("{0}")]
     Message(String),
 }

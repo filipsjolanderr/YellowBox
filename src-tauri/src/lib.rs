@@ -9,6 +9,7 @@ pub mod fs;
 pub mod metadata;
 pub mod models;
 pub mod pipeline;
+pub mod thumbnailer;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,6 +24,9 @@ pub fn run() {
             commands::check_zip_structure,
             commands::initialize_and_load,
             commands::get_memories_state,
+            commands::clear_preview_temp,
+            commands::extract_preview_media,
+            commands::resolve_local_media_paths,
             commands::start_pipeline,
             commands::pause_pipeline,
             commands::retry_item,

@@ -15,6 +15,7 @@ export interface ParsedMemory {
     errorMessage?: string;
     extension?: string;
     hasOverlay: boolean;
+    hasThumbnail: boolean;
     mediaType: "Image" | "Video";
 }
 
@@ -81,6 +82,7 @@ export function parseMemoriesJson(jsonContent: string): ParsedMemory[] {
                 location,
                 state: "Pending", // Initial state before checking processing status
                 hasOverlay: false,
+                hasThumbnail: false,
                 mediaType: mem["Media Type"]
             };
         });

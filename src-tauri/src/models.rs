@@ -24,6 +24,7 @@ pub struct MemoryItem {
     pub error_message: Option<String>,
     pub extension: Option<String>,
     pub has_overlay: bool,
+    pub has_thumbnail: bool,
     pub media_type: String,
 }
 

@@ -13,6 +13,7 @@ pub trait MemoryRepository: Send + Sync {
         error_message: Option<&str>,
         extension: Option<String>,
         has_overlay: Option<bool>,
+        has_thumbnail: Option<bool>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
     fn get_all_memories(&self) -> impl std::future::Future<Output = Result<Vec<MemoryItem>>> + Send;
     fn update_states(
@@ -56,6 +57,7 @@ impl DbManager {
                     error_message TEXT,
                     extension TEXT,
                     has_overlay INTEGER DEFAULT 0,
+                    has_thumbnail INTEGER DEFAULT 0,
                     media_type TEXT
                 )",
                 [],
@@ -71,17 +73,18 @@ impl MemoryRepository for DbManager {
         
         self.conn.call(move |conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, media_type)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     cloned_item.id,
                     cloned_item.download_url,
                     cloned_item.original_date,
                     cloned_item.location,
-                    cloned_item.state.as_ref(), // Use strum's AsRefStr
+                    cloned_item.state.as_ref(),
                     cloned_item.error_message,
                     cloned_item.extension,
                     cloned_item.has_overlay as i32,
+                    cloned_item.has_thumbnail as i32,
                     cloned_item.media_type
                 ],
             )
@@ -97,12 +100,14 @@ impl MemoryRepository for DbManager {
         error_message: Option<&str>,
         extension: Option<String>,
         has_overlay: Option<bool>,
+        has_thumbnail: Option<bool>,
     ) -> Result<()> {
         let cloned_id = id.to_string();
         let cloned_state = state.clone();
         let cloned_err = error_message.map(|s| s.to_string());
         let cloned_ext = extension.clone();
         let cloned_overlay = has_overlay.clone();
+        let cloned_thumb = has_thumbnail.clone();
 
         self.conn.call(move |conn| {
             conn.execute(
@@ -110,13 +115,15 @@ impl MemoryRepository for DbManager {
                     state = ?1, 
                     error_message = ?2, 
                     extension = COALESCE(?3, extension),
-                    has_overlay = COALESCE(?4, has_overlay)
-                 WHERE id = ?5",
+                    has_overlay = COALESCE(?4, has_overlay),
+                    has_thumbnail = COALESCE(?5, has_thumbnail)
+                 WHERE id = ?6",
                 rusqlite::params![
                     cloned_state.as_ref(),
                     cloned_err,
                     cloned_ext,
                     cloned_overlay.map(|b| b as i32),
+                    cloned_thumb.map(|b| b as i32),
                     cloned_id
                 ],
             )
@@ -128,7 +135,7 @@ impl MemoryRepository for DbManager {
     /// Retrieves all memory items
     async fn get_all_memories(&self) -> Result<Vec<MemoryItem>> {
         let memories = self.conn.call(|conn| {
-            let mut stmt = conn.prepare("SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, media_type FROM memories")?;
+            let mut stmt = conn.prepare("SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type FROM memories")?;
             let mut memories = Vec::new();
             let rows = stmt.query_map([], |row| {
                 let state_str: String = row.get(4)?;
@@ -141,7 +148,8 @@ impl MemoryRepository for DbManager {
                     error_message: row.get(5)?,
                     extension: row.get(6)?,
                     has_overlay: row.get::<_, i32>(7)? != 0,
-                    media_type: row.get(8)?,
+                    has_thumbnail: row.get::<_, i32>(8)? != 0,
+                    media_type: row.get(9)?,
                 })
             })?;
             for row in rows {
@@ -166,7 +174,7 @@ impl MemoryRepository for DbManager {
 
         self.conn.call(move |conn| {
             conn.execute(
-                "UPDATE memories SET state = ?1 WHERE state = ?2",
+                "UPDATE memories SET state = ?1, error_message = NULL WHERE state = ?2",
                 rusqlite::params![to_str, from_str],
             )
         }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
