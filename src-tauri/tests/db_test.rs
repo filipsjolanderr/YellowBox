@@ -16,6 +16,7 @@ fn create_mock_item(id: &str) -> MemoryItem {
         error_message: None,
         extension: None,
         has_overlay: false,
+        has_thumbnail: false,
         media_type: "image".to_string(),
     }
 }
@@ -68,6 +69,7 @@ async fn test_update_state() {
         Some("No error"),
         Some("png".to_string()),
         Some(true),
+        None,
     )
     .await
     .unwrap();
@@ -95,12 +97,13 @@ async fn test_update_partial_fields() {
         None,
         Some("jpg".to_string()),
         Some(true),
+        None,
     )
     .await
     .unwrap();
 
     // Second update should preserve extension/overlay due to COALESCE in SQL
-    db.update_state("mem_part", ProcessingState::Completed, None, None, None)
+    db.update_state("mem_part", ProcessingState::Completed, None, None, None, None)
         .await
         .unwrap();
 
