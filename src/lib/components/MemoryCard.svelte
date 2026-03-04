@@ -40,27 +40,27 @@
         (!memory.extension &&
             memory.downloadUrl.toLowerCase().includes(".zip"));
 
-    // Prefer local: resolvedLocalPath (from ZIP extraction) or output folder when done.
+    // Prefer local output folder when done or extraction is ready; fallback to resolvedLocalPath (from ZIP extraction preview).
     // When isExtracted+hasOverlay: use main file (overlay shown on top like memories.html).
     // When isDone: use combined file.
     $: videoSrc = isZip
         ? ""
-        : resolvedLocalPath
-          ? tauriService.getConvertedSrc(resolvedLocalPath)
+        : selectedOutput && isDone
+          ? getFinalSrc(memory)
           : selectedOutput && (isExtracted || isFailedWithFiles)
             ? getLocalMainSrc(memory)
-            : selectedOutput && isDone
-              ? getFinalSrc(memory)
+            : resolvedLocalPath
+              ? tauriService.getConvertedSrc(resolvedLocalPath)
               : memory.downloadUrl || "";
 
     $: imageSrc = isZip
         ? ""
-        : resolvedLocalPath
-          ? tauriService.getConvertedSrc(resolvedLocalPath)
+        : selectedOutput && isDone
+          ? getFinalSrc(memory)
           : selectedOutput && (isExtracted || isFailedWithFiles)
             ? getLocalMainSrc(memory)
-            : selectedOutput && isDone
-              ? getFinalSrc(memory)
+            : resolvedLocalPath
+              ? tauriService.getConvertedSrc(resolvedLocalPath)
               : memory.downloadUrl || "";
 
     function lazyLoadVideo(node: HTMLVideoElement, src: string) {
@@ -133,7 +133,9 @@
     function getLocalMainSrc(memory: ParsedMemory) {
         if (!selectedOutput) return "";
         const ext = memory.extension || (isMaybeVideo(memory) ? "mp4" : "jpg");
-        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}-main.${ext}`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${memory.id}-main.${ext}`),
+        );
     }
 
     function getLocalMainSrcFallback(memory: ParsedMemory) {
@@ -143,13 +145,17 @@
             .replace(" UTC", "")
             .replace(/:/g, "-")
             .replace(/ /g, "_");
-        return tauriService.getConvertedSrc(toLocalPath(`${cleanDate}_${memory.id}-main.${ext}`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${cleanDate}_${memory.id}-main.${ext}`),
+        );
     }
 
     /** For videos: main may have .jpg (wrong ext) when we expect .mp4 */
     function getLocalMainSrcJpgFallback(memory: ParsedMemory) {
         if (!selectedOutput || !isMaybeVideo(memory)) return "";
-        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}-main.jpg`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${memory.id}-main.jpg`),
+        );
     }
 
     function getLocalMainSrcJpgFallbackWithDate(memory: ParsedMemory) {
@@ -158,7 +164,9 @@
             .replace(" UTC", "")
             .replace(/:/g, "-")
             .replace(/ /g, "_");
-        return tauriService.getConvertedSrc(toLocalPath(`${cleanDate}_${memory.id}-main.jpg`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${cleanDate}_${memory.id}-main.jpg`),
+        );
     }
 
     function getFinalSrcFallback(memory: ParsedMemory) {
@@ -169,7 +177,9 @@
 
     function getOverlaySrc(memory: ParsedMemory) {
         if (!selectedOutput) return "";
-        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}-overlay.png`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${memory.id}-overlay.png`),
+        );
     }
 
     function getOverlaySrcFallback(memory: ParsedMemory) {
@@ -178,12 +188,16 @@
             .replace(" UTC", "")
             .replace(/:/g, "-")
             .replace(/ /g, "_");
-        return tauriService.getConvertedSrc(toLocalPath(`${cleanDate}_${memory.id}-overlay.png`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${cleanDate}_${memory.id}-overlay.png`),
+        );
     }
 
     function getOverlaySrcJpgFallback(memory: ParsedMemory) {
         if (!selectedOutput) return "";
-        return tauriService.getConvertedSrc(toLocalPath(`${memory.id}-overlay.jpg`));
+        return tauriService.getConvertedSrc(
+            toLocalPath(`${memory.id}-overlay.jpg`),
+        );
     }
 
     function getCleanDate(memory: ParsedMemory): string {
@@ -195,8 +209,14 @@
 
     // Only request overlay when file exists to avoid 404 errors
     $: overlayCheckPromise =
-        (isExtracted || isFailedWithFiles) && memory.hasOverlay && selectedOutput
-            ? tauriService.checkOverlayExists(selectedOutput, memory.id, getCleanDate(memory))
+        (isExtracted || isFailedWithFiles) &&
+        memory.hasOverlay &&
+        selectedOutput
+            ? tauriService.checkOverlayExists(
+                  selectedOutput,
+                  memory.id,
+                  getCleanDate(memory),
+              )
             : Promise.resolve(false);
 
     function isMaybeVideo(memory: ParsedMemory) {
@@ -220,9 +240,11 @@
             await tauriService.retryItem(sessionId, memory.id);
             // After resetting state to Pending, give it a tiny delay then kick off pipeline processing
             setTimeout(() => {
-                tauriService.startPipeline(sessionId, false, null, selectedOutput).catch((err) => {
-                    toast.error(`Auto-resume failed: ${err}`);
-                });
+                tauriService
+                    .startPipeline(sessionId, false, null, selectedOutput)
+                    .catch((err) => {
+                        toast.error(`Auto-resume failed: ${err}`);
+                    });
             }, 300);
         } catch (err) {
             toast.error(`Retry failed: ${err}`);
@@ -246,10 +268,7 @@
                     const vid = e.currentTarget as HTMLVideoElement;
                     vid.style.display = "";
                     vid.classList.remove("opacity-0");
-                    vid.classList.add(
-                        "opacity-50",
-                        "group-hover:opacity-100",
-                    );
+                    vid.classList.add("opacity-50", "group-hover:opacity-100");
                 }}
                 onerror={(e) => {
                     const vid = e.currentTarget as HTMLVideoElement;
@@ -260,7 +279,10 @@
                         return;
                     }
                     // Try output-folder fallbacks only when files may exist (done/extracted/failed)
-                    const fallbacks = (isExtracted || isFailedWithFiles) ? LOCAL_FALLBACKS_EXTRACTED : LOCAL_FALLBACKS_DONE;
+                    const fallbacks =
+                        isExtracted || isFailedWithFiles
+                            ? LOCAL_FALLBACKS_EXTRACTED
+                            : LOCAL_FALLBACKS_DONE;
                     if (
                         selectedOutput &&
                         (isDone || isExtracted || isFailedWithFiles) &&
@@ -283,22 +305,24 @@
             <img
                 src={imageSrc}
                 alt="Memory"
-                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {imageSrc ? 'opacity-50 group-hover:opacity-100' : 'opacity-0'} z-10"
+                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {imageSrc
+                    ? 'opacity-50 group-hover:opacity-100'
+                    : 'opacity-0'} z-10"
                 loading="lazy"
                 onload={(e) => {
                     hasLoadedSuccessfully = true;
                     const img = e.currentTarget as HTMLImageElement;
                     img.style.display = "";
                     img.classList.remove("opacity-0");
-                    img.classList.add(
-                        "opacity-50",
-                        "group-hover:opacity-100",
-                    );
+                    img.classList.add("opacity-50", "group-hover:opacity-100");
                 }}
                 onerror={(e) => {
                     const img = e.currentTarget as HTMLImageElement;
                     // Try output-folder fallbacks only when files may exist (done/extracted/failed)
-                    const fallbacks = (isExtracted || isFailedWithFiles) ? LOCAL_FALLBACKS_EXTRACTED : LOCAL_FALLBACKS_DONE;
+                    const fallbacks =
+                        isExtracted || isFailedWithFiles
+                            ? LOCAL_FALLBACKS_EXTRACTED
+                            : LOCAL_FALLBACKS_DONE;
                     if (
                         selectedOutput &&
                         (isDone || isExtracted || isFailedWithFiles) &&
@@ -341,18 +365,24 @@
                         src={getOverlaySrc(memory)}
                         alt="Overlay"
                         class="absolute top-0 left-0 w-full h-full object-contain z-20 pointer-events-none"
-                onerror={(e) => {
-                    const el = e.currentTarget as HTMLImageElement;
-                    const tried = parseInt(el.dataset.overlayTried ?? "0", 10);
-                    const fallbacks = [getOverlaySrcFallback(memory), getOverlaySrcJpgFallback(memory)];
-                    el.dataset.overlayTried = String(tried + 1);
-                    const next = fallbacks[tried];
-                    if (next) {
-                        el.src = next;
-                    } else {
-                        el.style.display = "none";
-                    }
-                }}
+                        onerror={(e) => {
+                            const el = e.currentTarget as HTMLImageElement;
+                            const tried = parseInt(
+                                el.dataset.overlayTried ?? "0",
+                                10,
+                            );
+                            const fallbacks = [
+                                getOverlaySrcFallback(memory),
+                                getOverlaySrcJpgFallback(memory),
+                            ];
+                            el.dataset.overlayTried = String(tried + 1);
+                            const next = fallbacks[tried];
+                            if (next) {
+                                el.src = next;
+                            } else {
+                                el.style.display = "none";
+                            }
+                        }}
                     />
                 {/if}
             {:catch}
