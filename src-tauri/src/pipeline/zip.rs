@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Known extensions for raw memory files (from downloader.rs).
-pub(crate) const RAW_FILE_EXTENSIONS: &[&str] = &["zip", "mp4", "jpg", "mov"];
+pub(crate) const RAW_FILE_EXTENSIONS: &[&str] = &[
+    "zip", "mp4", "jpg", "jpeg", "mov", "png", "gif", "webm", "heic",
+];
 
 pub fn is_video_ext(ext: &str) -> bool {
     let lower = ext.to_lowercase();
@@ -202,7 +204,10 @@ pub(crate) fn extract_id_from_filename(name: &str) -> Option<String> {
         .strip_suffix("-main")
         .or_else(|| before_ext.strip_suffix("-overlay"))?;
     let date = extract_date_prefix_from_name(name)?;
-    let after_date = id_part.strip_prefix(&date)?.trim_start_matches('_').trim_start_matches(' ');
+    let after_date = id_part
+        .strip_prefix(&date)?
+        .trim_start_matches('_')
+        .trim_start_matches(' ');
     if after_date.is_empty() {
         return None;
     }
@@ -256,7 +261,10 @@ pub fn build_main_media_zip_index(
             continue;
         }
         let date = extract_date_prefix_from_name(name);
-        let ext = Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("zip");
+        let ext = Path::new(name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("zip");
         let is_main = name_lower.contains("-main");
 
         // Index by date|id from filename (covers all files, handles JSON/ZIP ID mismatch)
@@ -310,7 +318,10 @@ pub fn build_overlay_zip_index(
         let zip_file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = zip_file.name();
         let name_lower = name.to_lowercase();
-        let ext = Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("png");
+        let ext = Path::new(name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("png");
         let is_png = ext.eq_ignore_ascii_case("png");
         let is_explicit_overlay = name_lower.contains("-overlay") || name_lower.contains("overlay");
         let is_main = name_lower.contains("-main");
@@ -343,9 +354,7 @@ pub fn build_overlay_zip_index(
         });
         if let Some(item) = primary_id {
             let key = composite_key(date.as_deref(), &item.id);
-            let should_insert = index
-                .get(&key)
-                .map_or(true, |(_, _, s)| specificity > *s);
+            let should_insert = index.get(&key).map_or(true, |(_, _, s)| specificity > *s);
             if should_insert {
                 index.insert(key, (i, ext.to_string(), specificity));
             }
@@ -368,8 +377,14 @@ pub fn build_overlay_zip_index(
 
         // Index by date|id_from_filename so overlay lookup by main file's ID works
         // (JSON IDs can differ from ZIP filenames; main lookup uses filename ID)
-        if let (Some(ref d), Some(ref ids_from_file)) = (&date, &extract_ids_from_overlay_filename(name)) {
-            let date_only = if d.len() >= 10 { d[..10].to_string() } else { d.clone() };
+        if let (Some(ref d), Some(ref ids_from_file)) =
+            (&date, &extract_ids_from_overlay_filename(name))
+        {
+            let date_only = if d.len() >= 10 {
+                d[..10].to_string()
+            } else {
+                d.clone()
+            };
             for id_from_file in ids_from_file {
                 let key_full = format!("{}|{}", d, id_from_file);
                 let should_insert_full = index
@@ -411,9 +426,18 @@ mod tests {
 
     #[test]
     fn test_id_appears_as_token_valid_matches() {
-        assert!(id_appears_as_token("2018-02-07_3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC-main.mp4", "3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC"));
-        assert!(id_appears_as_token("2018-02-07_3c6dc8b5-6d3b-4f64-8e8a-2f90d45b63fc-main.mp4", "3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC"));
-        assert!(id_appears_as_token("2018-02-07_3c6dc8b56d3b4f648e8a2f90d45b63fc-overlay.png", "3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC")); // no-hyphen variant
+        assert!(id_appears_as_token(
+            "2018-02-07_3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC-main.mp4",
+            "3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC"
+        ));
+        assert!(id_appears_as_token(
+            "2018-02-07_3c6dc8b5-6d3b-4f64-8e8a-2f90d45b63fc-main.mp4",
+            "3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC"
+        ));
+        assert!(id_appears_as_token(
+            "2018-02-07_3c6dc8b56d3b4f648e8a2f90d45b63fc-overlay.png",
+            "3C6DC8B5-6D3B-4F64-8E8A-2F90D45B63FC"
+        )); // no-hyphen variant
     }
 
     #[test]
@@ -425,9 +449,7 @@ mod tests {
         assert!(id_appears_as_token(name, id2));
     }
 
-    fn create_test_zip(
-        entries: &[(&str, &[u8])],
-    ) -> (tempfile::TempDir, std::path::PathBuf) {
+    fn create_test_zip(entries: &[(&str, &[u8])]) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let zip_path = dir.path().join("test.zip");
         let file = std::fs::File::create(&zip_path).unwrap();
@@ -480,7 +502,10 @@ mod tests {
             },
         ];
         let overlay_index = build_overlay_zip_index(&zip_path, &items).unwrap();
-        assert!(overlay_index.len() >= 2, "index has JSON + filename-based entries");
+        assert!(
+            overlay_index.len() >= 2,
+            "index has JSON + filename-based entries"
+        );
         let key1 = format!("2018-02-07|{}", id1);
         let key3 = format!("2018-02-07|{}", id3);
         assert!(overlay_index.contains_key(&key1));
@@ -496,9 +521,18 @@ mod tests {
         // Same content in Jan, Mar, Jun - each gets its own index entry (no dedup)
         let same_content = b"same_video_content_here";
         let (_dir, zip_path) = create_test_zip(&[
-            ("memories/2021-01-19_21-16-16_c888a42f-2b82-53a0-c17c-e4d0b67cc1fb-main.mp4", same_content),
-            ("memories/2021-03-03_19-41-46_f560c834-a033-13f2-cf18-0531ed083e27-main.mp4", same_content),
-            ("memories/2021-06-03_12-47-35_013c9515-02f6-d22c-a44e-ab166d8e8731-main.mp4", same_content),
+            (
+                "memories/2021-01-19_21-16-16_c888a42f-2b82-53a0-c17c-e4d0b67cc1fb-main.mp4",
+                same_content,
+            ),
+            (
+                "memories/2021-03-03_19-41-46_f560c834-a033-13f2-cf18-0531ed083e27-main.mp4",
+                same_content,
+            ),
+            (
+                "memories/2021-06-03_12-47-35_013c9515-02f6-d22c-a44e-ab166d8e8731-main.mp4",
+                same_content,
+            ),
         ]);
         let ids = vec![
             "c888a42f-2b82-53a0-c17c-e4d0b67cc1fb".to_string(),
@@ -506,9 +540,15 @@ mod tests {
             "013c9515-02f6-d22c-a44e-ab166d8e8731".to_string(),
         ];
         let index = build_main_media_zip_index(&zip_path, &ids).unwrap();
-        let (jan_idx, _) = index.get("2021-01-19_21-16-16|c888a42f-2b82-53a0-c17c-e4d0b67cc1fb").unwrap();
-        let (mar_idx, _) = index.get("2021-03-03_19-41-46|f560c834-a033-13f2-cf18-0531ed083e27").unwrap();
-        let (jun_idx, _) = index.get("2021-06-03_12-47-35|013c9515-02f6-d22c-a44e-ab166d8e8731").unwrap();
+        let (jan_idx, _) = index
+            .get("2021-01-19_21-16-16|c888a42f-2b82-53a0-c17c-e4d0b67cc1fb")
+            .unwrap();
+        let (mar_idx, _) = index
+            .get("2021-03-03_19-41-46|f560c834-a033-13f2-cf18-0531ed083e27")
+            .unwrap();
+        let (jun_idx, _) = index
+            .get("2021-06-03_12-47-35|013c9515-02f6-d22c-a44e-ab166d8e8731")
+            .unwrap();
         assert_eq!(*jan_idx, 0, "Jan at index 0");
         assert_eq!(*mar_idx, 1, "Mar at index 1");
         assert_eq!(*jun_idx, 2, "Jun at index 2");
@@ -519,14 +559,27 @@ mod tests {
         // Same segment ID in Jan and Mar - index must use date to disambiguate
         let seg_id = "SHARED-ID-1111-2222-3333-444455556666";
         let (_dir, zip_path) = create_test_zip(&[
-            ("2021-01-15_12-30-00_SHARED-ID-1111-2222-3333-444455556666-main.mp4", b"jan_video"),
-            ("2021-03-20_10-00-00_SHARED-ID-1111-2222-3333-444455556666-main.mp4", b"mar_video"),
+            (
+                "2021-01-15_12-30-00_SHARED-ID-1111-2222-3333-444455556666-main.mp4",
+                b"jan_video",
+            ),
+            (
+                "2021-03-20_10-00-00_SHARED-ID-1111-2222-3333-444455556666-main.mp4",
+                b"mar_video",
+            ),
         ]);
         let ids = vec![seg_id.to_string()];
         let index = build_main_media_zip_index(&zip_path, &ids).unwrap();
-        assert!(index.len() >= 2, "same ID in two months = at least two index entries");
-        let (jan_idx, _) = index.get("2021-01-15_12-30-00|SHARED-ID-1111-2222-3333-444455556666").unwrap();
-        let (mar_idx, _) = index.get("2021-03-20_10-00-00|SHARED-ID-1111-2222-3333-444455556666").unwrap();
+        assert!(
+            index.len() >= 2,
+            "same ID in two months = at least two index entries"
+        );
+        let (jan_idx, _) = index
+            .get("2021-01-15_12-30-00|SHARED-ID-1111-2222-3333-444455556666")
+            .unwrap();
+        let (mar_idx, _) = index
+            .get("2021-03-20_10-00-00|SHARED-ID-1111-2222-3333-444455556666")
+            .unwrap();
         assert_eq!(*jan_idx, 0, "Jan entry at index 0");
         assert_eq!(*mar_idx, 1, "Mar entry at index 1");
     }
@@ -550,7 +603,10 @@ mod tests {
         assert!(overlay_index.len() >= 1);
         let key1 = format!("2018-02-07|{}", id1);
         let (ov_idx, _) = overlay_index.get(&key1).unwrap();
-        assert_eq!(*ov_idx, 2, "split overlay (ID1_ID2.png) should win over single (ID1-overlay.png)");
+        assert_eq!(
+            *ov_idx, 2,
+            "split overlay (ID1_ID2.png) should win over single (ID1-overlay.png)"
+        );
     }
 }
 
@@ -568,7 +624,10 @@ pub fn build_export_zip_index(
         let zip_file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = zip_file.name();
         let name_lower = name.to_lowercase();
-        let ext = Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("zip");
+        let ext = Path::new(name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("zip");
         for id in &id_set {
             if id_appears_as_token(&name_lower, id) {
                 index.insert((*id).to_string(), (i, ext.to_string()));
