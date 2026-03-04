@@ -48,7 +48,6 @@
             if (index !== -1) {
               tab.memories[index] = updatedMemory;
               tab.memories = [...tab.memories];
-              // Don't refresh resolved paths - avoids reloading previews during backup
             }
           },
         );
@@ -72,6 +71,30 @@
     const tab = new Session(id, `Backup ${num}`);
     tabs.push(tab);
     activeTabId = id;
+  }
+
+  /** Collect IDs for extraction: segment IDs for split videos, else primary. Matches backend index logic. */
+  function collectIdsForExtraction(items: ParsedMemory[]): string[] {
+    return items.flatMap((m) =>
+      m.segmentIds && m.segmentIds.length > 1 ? m.segmentIds : [m.id],
+    );
+  }
+
+  /** Map backend paths (keyed by segment/primary ID) back to primary memory.id for display. */
+  function mapPathsToPrimaryIds(
+    paths: Record<string, string>,
+    items: ParsedMemory[],
+  ): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const m of items) {
+      const idsToTry =
+        m.segmentIds && m.segmentIds.length > 1
+          ? [m.id, ...m.segmentIds]
+          : [m.id];
+      const matchedId = idsToTry.find((id) => paths[id]);
+      if (matchedId) result[m.id] = paths[matchedId];
+    }
+    return result;
   }
 
   function handleCloseTab(id: string) {
@@ -150,6 +173,7 @@
   });
 
   // Database initialization logic for Active Tab
+  // Extract preview media first so we have local files for display before pipeline runs
   $effect(() => {
     const tab = activeTab;
     if (!tab) return;
@@ -157,18 +181,35 @@
       tab.selectedZip &&
       tab.selectedOutput &&
       tab.parsedItems.length > 0 &&
-      tab.memories.length === 0
+      tab.memories.length === 0 &&
+      !tab.isInitializingDb
     ) {
+      tab.isInitializingDb = true;
+      const zipPath = tab.selectedZip;
+      const ids = collectIdsForExtraction(tab.parsedItems);
       tauriService
-        .initializeAndLoad(tab.id, tab.selectedOutput, tab.parsedItems)
+        .extractPreviewMedia(tab.id, zipPath, ids)
+        .then(() => tauriService.resolveLocalMediaPaths(tab.id, ids))
+        .then((paths) => {
+          tab.resolvedLocalPaths = mapPathsToPrimaryIds(paths, tab.parsedItems);
+          return tauriService.initializeAndLoad(
+            tab.id,
+            tab.selectedOutput!,
+            tab.parsedItems,
+          );
+        })
         .then((items) => {
           tab.memories = items as ParsedMemory[];
           toast.success(
             `Loaded ${tab.memories.length} memories into ${tab.name}!`,
           );
-          // Don't re-resolve paths - keeps existing temp previews, no reload
         })
-        .catch((err) => toast.error(`DB Init Error: ${err}`));
+        .catch((err) => {
+          toast.error(`DB Init Error: ${err}`);
+        })
+        .finally(() => {
+          tab.isInitializingDb = false;
+        });
     }
   });
 
@@ -204,11 +245,11 @@
         tab.isParsingZip = false;
 
         // Extract media to temp folder for local previews (no CDN)
-        const ids = tab.parsedItems.map((m) => m.id);
+        const ids = collectIdsForExtraction(tab.parsedItems);
         try {
           await tauriService.extractPreviewMedia(tab.id, path, ids);
           const paths = await tauriService.resolveLocalMediaPaths(tab.id, ids);
-          tab.resolvedLocalPaths = paths;
+          tab.resolvedLocalPaths = mapPathsToPrimaryIds(paths, tab.parsedItems);
         } catch (e) {
           console.warn("Preview extraction failed, will use remote URLs:", e);
         }
@@ -266,7 +307,12 @@
     tab.isProcessing = true;
     toast.info(`Starting backup pipeline for ${tab.name}...`);
     try {
-      await tauriService.startPipeline(tab.id, appConfig.overwriteExisting);
+      await tauriService.startPipeline(
+        tab.id,
+        appConfig.overwriteExisting,
+        appConfig.maxConcurrency,
+        tab.selectedOutput,
+      );
     } catch (err) {
       toast.error(`Pipeline error: ${err}`);
       tab.isProcessing = false;
@@ -281,7 +327,12 @@
       toast.info(`Resuming backup pipeline for ${tab.name}...`);
       tab.isProcessing = true;
       try {
-        await tauriService.startPipeline(tab.id, false); // Resume doesn't overwrite
+        await tauriService.startPipeline(
+          tab.id,
+          false,
+          appConfig.maxConcurrency,
+          tab.selectedOutput,
+        ); // Resume doesn't overwrite
         tab.isPaused = false;
       } catch (err) {
         toast.error(`Pipeline resume error: ${err}`);

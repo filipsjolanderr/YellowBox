@@ -8,6 +8,7 @@ async fn create_test_db() -> DbManager {
 
 fn create_mock_item(id: &str) -> MemoryItem {
     MemoryItem {
+        segment_ids: None,
         id: id.to_string(),
         download_url: format!("http://example.com/{}", id),
         original_date: "2024-01-01 12:00:00 UTC".to_string(),
@@ -65,7 +66,7 @@ async fn test_update_state() {
     // Update state to Extract, set extension to "png" and has_overlay to true
     db.update_state(
         "mem_upd",
-        ProcessingState::Extracted,
+        ProcessingState::Unpacked,
         Some("No error"),
         Some("png".to_string()),
         Some(true),
@@ -78,7 +79,7 @@ async fn test_update_state() {
     assert_eq!(memories.len(), 1);
 
     let updated = &memories[0];
-    assert_eq!(updated.state, ProcessingState::Extracted);
+    assert_eq!(updated.state, ProcessingState::Unpacked);
     assert_eq!(updated.error_message, Some("No error".to_string()));
     assert_eq!(updated.extension, Some("png".to_string()));
     assert_eq!(updated.has_overlay, true);
@@ -93,7 +94,7 @@ async fn test_update_partial_fields() {
     // First update gives it an extension and overlay
     db.update_state(
         "mem_part",
-        ProcessingState::Downloaded,
+        ProcessingState::Acquired,
         None,
         Some("jpg".to_string()),
         Some(true),

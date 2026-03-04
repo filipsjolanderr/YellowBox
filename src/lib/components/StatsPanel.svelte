@@ -17,6 +17,7 @@
 
     // Derived aliases for convenience if needed, or just use session.X
     let memoriesLength = $derived(session.totalCount);
+    let isReadyForBackup = $derived(session.memories.length > 0);
     let completedCount = $derived(session.completedCount);
     let progressPercentage = $derived(session.progressPercentage);
     let isAllProcessed = $derived(session.isAllProcessed);
@@ -104,7 +105,12 @@
                         <FolderOpen class="mr-1.5 h-3.5 w-3.5 shrink-0" />
                         {selectedOutput}
                     </Button>
-                    {#if isProcessing}
+                    {#if !isReadyForBackup}
+                        <Button disabled class="min-w-[140px] opacity-70" title="Waiting for setup to finish...">
+                            <RefreshCw class="mr-2 h-4 w-4 animate-spin" />
+                            Preparing...
+                        </Button>
+                    {:else if isProcessing}
                         <Button
                             onclick={onTogglePause}
                             variant={isPaused ? "default" : "secondary"}

@@ -1,18 +1,18 @@
 use crate::db::MemoryRepository;
+use tracing::{info, warn};
 use crate::metadata;
 use crate::models::{MemoryItem, ProcessingState};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 use zip::ZipArchive;
-use tauri::{AppHandle, Emitter};
-use crate::thumbnailer;
 
 /// Extracts the JSON metadata straight from the provided Snapchat `.zip` archive.
 /// Returns the parsed string content and the deduced destination `memories` folder.
 pub fn extract_json_from_zip(zip_path: &Path) -> Result<(String, PathBuf), String> {
+    info!(path = %zip_path.display(), "extract_json_from_zip");
     let file = File::open(zip_path).map_err(|e| format!("Failed to open zip: {}", e))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("Invalid zip archive: {}", e))?;
 
@@ -111,9 +111,6 @@ pub async fn hydrate_state_from_folder(
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string());
-            
-            let thumb_path = memories_dir.join(".thumbs").join(format!("{}.jpg", item.id));
-            let thumb_exists = thumb_path.exists();
 
             let _ = db.update_state(
                 &item.id,
@@ -121,7 +118,7 @@ pub async fn hydrate_state_from_folder(
                 None,
                 ext,
                 Some(overlay_exists),
-                Some(thumb_exists),
+                None,
             ).await;
         } else if let Some(m) = main_file {
             let ext = Path::new(m)
@@ -129,28 +126,22 @@ pub async fn hydrate_state_from_folder(
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string());
 
-            let thumb_path = memories_dir.join(".thumbs").join(format!("{}.jpg", item.id));
-            let thumb_exists = thumb_path.exists();
-
             let _ = db.update_state(
                 &item.id,
-                ProcessingState::Extracted,
+                ProcessingState::Unpacked,
                 None,
                 ext,
                 Some(overlay_exists),
-                Some(thumb_exists),
+                None,
             ).await;
         } else if zip_exists {
-            let thumb_path = memories_dir.join(".thumbs").join(format!("{}.jpg", item.id));
-            let thumb_exists = thumb_path.exists();
-
             let _ = db.update_state(
                 &item.id,
-                ProcessingState::Downloaded,
+                ProcessingState::Acquired,
                 None,
                 None,
                 Some(overlay_exists),
-                Some(thumb_exists),
+                None,
             ).await;
         }
     }
@@ -160,46 +151,100 @@ pub async fn hydrate_state_from_folder(
 
 /// Extracts media files from the Snapchat export ZIP to a temp directory for preview.
 /// Returns the temp directory path. Files are saved as `{id}.{ext}` for easy lookup.
+/// Uses a ZIP index for O(1) lookup per item instead of O(archive_size × memory_ids) scan.
+/// Uses session-specific subdir so multiple tabs don't overwrite each other's previews.
 pub fn extract_preview_to_temp(
     zip_path: &Path,
     memory_ids: &[String],
     app_temp_dir: &Path,
+    session_id: &str,
 ) -> Result<PathBuf, String> {
-    let preview_dir = app_temp_dir.join("yellowbox_preview");
+    let preview_dir = app_temp_dir.join("yellowbox_preview").join(session_id);
     if preview_dir.exists() {
         let _ = std::fs::remove_dir_all(&preview_dir);
     }
     std::fs::create_dir_all(&preview_dir).map_err(|e| e.to_string())?;
 
+    let index = crate::pipeline::build_main_media_zip_index(zip_path, memory_ids)?;
+    if index.is_empty() {
+        let sample_ids: Vec<&str> = memory_ids.iter().take(3).map(|s| s.as_str()).collect();
+        warn!(
+            zip_path = %zip_path.display(),
+            requested_ids = memory_ids.len(),
+            sample_ids = ?sample_ids,
+            "preview extraction: no files matched in ZIP (check that zip contains media and IDs match)"
+        );
+        return Ok(preview_dir);
+    }
+
     let file = File::open(zip_path).map_err(|e| format!("Failed to open zip: {}", e))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("Invalid zip: {}", e))?;
 
-    for i in 0..archive.len() {
-        let mut zip_file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = zip_file.name().to_string();
-        let name_lower = name.to_lowercase();
-
-        // Skip overlay files - we only want main media for preview
-        if name_lower.contains("-overlay") {
-            continue;
-        }
-
-        for id in memory_ids {
-            if name_lower.contains(&id.to_lowercase()) {
-                let ext = Path::new(&name)
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("bin");
-                let out_path = preview_dir.join(format!("{}.{}", id, ext));
-                if let Ok(mut outfile) = File::create(&out_path) {
-                    let _ = std::io::copy(&mut zip_file, &mut outfile);
-                }
-                break;
+    for (key, (idx, ext)) in &index {
+        // Index uses composite keys "date|id" or "|id"; extract plain id for filename (pipe invalid on Windows)
+        let id = key.rsplit_once('|').map(|(_, id)| id).unwrap_or(key.as_str());
+        if let Ok(mut zip_file) = archive.by_index(*idx) {
+            let out_path = preview_dir.join(format!("{}.{}", id, ext));
+            if let Ok(mut outfile) = File::create(&out_path) {
+                let _ = std::io::copy(&mut zip_file, &mut outfile);
             }
         }
     }
 
     Ok(preview_dir)
+}
+
+/// Scans each directory once and builds id -> path map for all requested memory IDs.
+/// Avoids N+1 WalkDir scans when resolving many paths.
+pub fn resolve_local_media_paths_batch(
+    scan_dirs: &[PathBuf],
+    memory_ids: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    if memory_ids.is_empty() {
+        return result;
+    }
+    for dir in scan_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(dir)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            let path_str = entry.path().to_string_lossy().to_string();
+            for id in memory_ids {
+                if result.contains_key(id) {
+                    continue;
+                }
+                let id_lower = id.to_lowercase();
+                let id_marker = format!("_{}.", id_lower);
+                let id_marker_alt = format!("{}.", id_lower);
+                let main_marker = format!("{}-main", id_lower);
+                // Preview format: {id}.{ext} (e.g. extracted from ZIP to temp)
+                let is_preview = Path::new(&name)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase() == id_lower)
+                    .unwrap_or(false);
+                let is_combined = (name.contains(&id_marker) || name.starts_with(&id_marker_alt))
+                    && !name.contains("-main")
+                    && !name.contains("-overlay")
+                    && !name.ends_with(".zip");
+                let is_main = name.contains(&main_marker);
+                if is_preview || is_combined || is_main {
+                    result.insert(id.clone(), path_str.clone());
+                    break;
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Finds the actual local media file path for a memory by scanning the output directory.
@@ -236,80 +281,3 @@ pub fn resolve_local_media_path(memories_dir: &Path, memory_id: &str) -> Option<
     None
 }
 
-/// Proactively generates thumbnails from the source ZIP for items that don't have one yet.
-/// This runs in the background during setup to provide immediate previews.
-pub async fn generate_thumbnails_from_zip(
-    app: &AppHandle,
-    zip_path: &Path,
-    out_dir: &Path,
-    db: &Arc<impl MemoryRepository + 'static>,
-    items: Vec<MemoryItem>,
-    session_id: String,
-) -> Result<(), String> {
-    let thumbs_dir = out_dir.join(".thumbs");
-    if !thumbs_dir.exists() {
-        let _ = std::fs::create_dir_all(&thumbs_dir);
-    }
-
-    let archive_file = File::open(zip_path).map_err(|e| e.to_string())?;
-    let mut archive = ZipArchive::new(archive_file).map_err(|e| e.to_string())?;
-
-    for item in items {
-        if item.has_thumbnail {
-            continue;
-        }
-
-        let id = item.id.clone();
-        let thumb_path = thumbs_dir.join(format!("{}.jpg", id));
-        if thumb_path.exists() {
-            let _ = db.update_state(&id, item.state.clone(), None, item.extension.clone(), Some(item.has_overlay), Some(true)).await;
-            continue;
-        }
-
-        // Try to find the file in the ZIP
-        let mut found_index = None;
-        for i in 0..archive.len() {
-            if let Ok(file) = archive.by_index(i) {
-                if file.name().contains(&id) {
-                    found_index = Some(i);
-                    break;
-                }
-            }
-        }
-
-        if let Some(idx) = found_index {
-            let mut extracted_successfully = false;
-            let mut is_video = false;
-            let mut temp_path = PathBuf::new();
-
-            if let Ok(mut zip_file) = archive.by_index(idx) {
-                let ext = Path::new(zip_file.name())
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("bin")
-                    .to_lowercase();
-                
-                is_video = crate::pipeline::is_video_ext(&ext);
-                temp_path = thumbs_dir.join(format!("{}-temp.{}", id, ext));
-                
-                if let Ok(mut outfile) = File::create(&temp_path) {
-                    if std::io::copy(&mut zip_file, &mut outfile).is_ok() {
-                        extracted_successfully = true;
-                    }
-                }
-            } // ZIP handle dropped here
-
-            if extracted_successfully {
-                if thumbnailer::generate_thumbnail(app, &temp_path, &thumb_path, is_video).await.is_ok() {
-                    let mut updated_item = item.clone();
-                    updated_item.has_thumbnail = true;
-                    let _ = db.update_state(&id, updated_item.state.clone(), None, updated_item.extension.clone(), Some(updated_item.has_overlay), Some(true)).await;
-                    let _ = app.emit(&format!("memory-updated-{}", session_id), updated_item);
-                }
-                let _ = std::fs::remove_file(&temp_path);
-            }
-        }
-    }
-
-    Ok(())
-}

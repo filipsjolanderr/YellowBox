@@ -14,6 +14,7 @@ export class Session {
     isProcessing = $state(false);
     isPaused = $state(false);
     isParsingZip = $state(false);
+    isInitializingDb = $state(false);
     parsingProgress = tweened(0, { duration: 400, easing: cubicOut });
     hasAttemptedLoad = $state(false);
 

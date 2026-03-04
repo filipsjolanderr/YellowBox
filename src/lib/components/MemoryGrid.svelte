@@ -10,14 +10,23 @@
         isProcessing?: boolean;
         isAllProcessed?: boolean;
     }>();
+
+    const sortedMemories = $derived(
+        [...memories].sort((a, b) => {
+            const ta = Date.parse(a.originalDate) || 0;
+            const tb = Date.parse(b.originalDate) || 0;
+            return tb - ta; // newest first
+        })
+    );
 </script>
 
-<div class="h-full overflow-y-auto p-4 content-start">
+<div class="h-full overflow-y-auto p-4">
     <div
-        class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12 gap-2"
+        class="grid gap-2 content-start w-full"
+        style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));"
     >
-        {#each memories as memory (memory.id)}
-            <MemoryCard {sessionId} {memory} {selectedOutput} resolvedLocalPath={resolvedLocalPaths[memory.id]} {isProcessing} {isAllProcessed} />
+        {#each sortedMemories as memory (memory.id)}
+            <MemoryCard {sessionId} {memory} {selectedOutput} resolvedLocalPath={resolvedLocalPaths[memory.id]} />
         {/each}
     </div>
 </div>

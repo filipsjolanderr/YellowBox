@@ -8,6 +8,8 @@ export interface SnapchatMemory {
 
 export interface ParsedMemory {
     id: string;
+    /** For split videos: segment IDs in playback order. Empty for single-segment. */
+    segmentIds?: string[];
     downloadUrl: string;
     originalDate: string;
     location: string | null;
@@ -66,26 +68,93 @@ export function parseMemoriesJson(jsonContent: string): ParsedMemory[] {
 
         const rawMemories: SnapchatMemory[] = payload["Saved Media"];
 
-        return rawMemories.map(mem => {
-            // Extract a unique identifier from the download link (mid or sid)
-            const url = new URL(mem["Download Link"]);
-            const id = url.searchParams.get("mid") || url.searchParams.get("sid") || "unknown-id";
+        // Videos within 10 seconds of each other are segments of one long video (Snapchat 10-sec segments)
+        const SEGMENT_GAP_SECONDS = 10; // solo <10s, combine >10s; overlay on both
+        const videoEntries: Array<{ id: string; downloadUrl: string; location: string | null; dateStr: string; ts: number }> = [];
+        const images: Array<{ id: string; downloadUrl: string; originalDate: string; location: string | null }> = [];
 
-            // Normalize location from various Snapchat export formats to "lat, lon" string
+        for (const mem of rawMemories) {
+            const link = mem["Download Link"] ?? mem["Media Download Url"];
+            if (!link || typeof link !== "string") {
+                console.warn("Skipping memory: missing Download Link", mem);
+                continue;
+            }
+            let url: URL;
+            try {
+                url = new URL(link);
+            } catch {
+                console.warn("Skipping memory: invalid Download Link", link);
+                continue;
+            }
+            const id = url.searchParams.get("mid") || url.searchParams.get("sid") || null;
+            if (!id || id === "unknown-id") {
+                console.warn("Skipping memory: no mid/sid in URL", link);
+                continue;
+            }
             const rawLocation = mem["Location"] ?? (mem as unknown as Record<string, unknown>)["location"];
             const location = normalizeLocation(rawLocation as LocationInput);
+            const downloadUrl = mem["Media Download Url"] || mem["Download Link"] || link;
 
-            return {
-                id,
-                downloadUrl: mem["Media Download Url"] || mem["Download Link"], // fallback if missing
-                originalDate: mem["Date"],
-                location,
-                state: "Pending", // Initial state before checking processing status
+            if (mem["Media Type"] === "Video") {
+                const dateStr = mem["Date"] ?? "";
+                const ts = Date.parse(dateStr) || 0;
+                videoEntries.push({ id, downloadUrl, location, dateStr, ts });
+            } else {
+                images.push({ id, downloadUrl, originalDate: mem["Date"] ?? "", location });
+            }
+        }
+
+        // Sort by timestamp, then group consecutive videos within SEGMENT_GAP_SECONDS
+        videoEntries.sort((a, b) => a.ts - b.ts);
+        const videoGroups: Array<typeof videoEntries> = [];
+        let currentGroup: typeof videoEntries = [];
+        for (const v of videoEntries) {
+            const prev = currentGroup[currentGroup.length - 1];
+            if (currentGroup.length === 0 || (prev && v.ts - prev.ts <= SEGMENT_GAP_SECONDS * 1000)) {
+                currentGroup.push(v);
+            } else {
+                videoGroups.push(currentGroup);
+                currentGroup = [v];
+            }
+        }
+        if (currentGroup.length > 0) videoGroups.push(currentGroup);
+
+        // Build one memory per video (merged segments) or per image
+        const result: ParsedMemory[] = [];
+
+        for (const segments of videoGroups) {
+            const segmentIds = segments.map((s) => s.id);
+            const primaryId = segmentIds[0];
+            const primary = segments[0];
+            result.push({
+                id: primaryId,
+                segmentIds: segmentIds.length > 1 ? segmentIds : undefined,
+                downloadUrl: primary.downloadUrl,
+                originalDate: primary.dateStr,
+                location: primary.location,
+                state: "Pending" as const,
                 hasOverlay: false,
                 hasThumbnail: false,
-                mediaType: mem["Media Type"]
-            };
-        });
+                mediaType: "Video"
+            });
+        }
+
+        // Include all images. Previously we skipped images with same date as video (overlay heuristic),
+        // but that caused missing pictures. Better to include all; duplicates are preferable to loss.
+        for (const img of images) {
+            result.push({
+                id: img.id,
+                downloadUrl: img.downloadUrl,
+                originalDate: img.originalDate,
+                location: img.location,
+                state: "Pending" as const,
+                hasOverlay: false,
+                hasThumbnail: false,
+                mediaType: "Image"
+            });
+        }
+
+        return result;
 
     } catch (e) {
         console.error("Failed to parse Snapchat Memories JSON:", e);

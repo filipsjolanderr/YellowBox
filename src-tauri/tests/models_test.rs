@@ -4,9 +4,10 @@ use yellowbox_lib::models::{MemoryItem, ProcessingState};
 #[test]
 fn test_processing_state_to_string() {
     assert_eq!(ProcessingState::Pending.to_string(), "Pending");
-    assert_eq!(ProcessingState::Downloaded.to_string(), "Downloaded");
-    assert_eq!(ProcessingState::Extracted.to_string(), "Extracted");
-    assert_eq!(ProcessingState::Combined.to_string(), "Combined");
+    // Serialized names kept for DB/API compatibility
+    assert_eq!(ProcessingState::Acquired.to_string(), "Downloaded");
+    assert_eq!(ProcessingState::Unpacked.to_string(), "Extracted");
+    assert_eq!(ProcessingState::Composited.to_string(), "Combined");
     assert_eq!(ProcessingState::Completed.to_string(), "Completed");
     assert_eq!(ProcessingState::Failed.to_string(), "Failed");
 }
@@ -32,11 +33,12 @@ fn test_processing_state_as_ref() {
 #[test]
 fn test_memory_item_serialization() {
     let item = MemoryItem {
+        segment_ids: None,
         id: "test1".to_string(),
         download_url: "http://example.com/mem.zip".to_string(),
         original_date: "2022-01-01 12:00:00 UTC".to_string(),
         location: Some("12.34, 56.78".to_string()),
-        state: ProcessingState::Downloaded,
+        state: ProcessingState::Acquired,
         error_message: None,
         extension: Some("mp4".to_string()),
         has_overlay: true,
@@ -51,7 +53,7 @@ fn test_memory_item_serialization() {
 
     let deserialized: MemoryItem = serde_json::from_str(&serialized).unwrap();
     assert_eq!(deserialized.id, "test1");
-    assert_eq!(deserialized.state, ProcessingState::Downloaded);
+    assert_eq!(deserialized.state, ProcessingState::Acquired);
 }
 
 #[test]

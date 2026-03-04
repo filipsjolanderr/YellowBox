@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use tracing::info;
 use tokio::task;
 
 /// Extracts a memory ZIP archive and returns the paths to the main media and (optional) overlay file.
@@ -16,7 +17,19 @@ pub async fn extract_memory(
             if ext != "zip" {
                 let outpath = dest_dir.join(format!("{}-main.{}", id, ext.to_string_lossy()));
                 std::fs::copy(&zip_path, &outpath).map_err(|e| e.to_string())?;
-                return Ok((outpath, None));
+                // Check for overlay extracted alongside (e.g. from export ZIP)
+                let overlay_path = dest_dir.join(format!("{}-overlay.png", id));
+                let overlay = if overlay_path.exists() {
+                    Some(overlay_path)
+                } else {
+                    let overlay_jpg = dest_dir.join(format!("{}-overlay.jpg", id));
+                    if overlay_jpg.exists() {
+                        Some(overlay_jpg)
+                    } else {
+                        None
+                    }
+                };
+                return Ok((outpath, overlay));
             }
         }
 
@@ -77,6 +90,7 @@ pub async fn extract_memory(
         }
 
         let main = main_file.ok_or_else(|| "Main media file not found in ZIP".to_string())?;
+        info!(id = %id, has_overlay = overlay_file.is_some(), "extracted memory");
         Ok((main, overlay_file))
     })
     .await

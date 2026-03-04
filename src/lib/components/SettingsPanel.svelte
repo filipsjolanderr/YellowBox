@@ -10,22 +10,31 @@
     } from "$lib/components/ui/dialog";
     import { Label } from "$lib/components/ui/label";
     import { Switch } from "$lib/components/ui/switch";
-    import { Slider } from "$lib/components/ui/slider";
     import { Button } from "$lib/components/ui/button";
-    import { Settings, RotateCcw } from "lucide-svelte";
+    import { Settings } from "lucide-svelte";
     import { appConfig } from "$lib/config.svelte";
 
     import * as Tooltip from "$lib/components/ui/tooltip";
 
     let open = $state(false);
+    let maxConcurrencyInput = $state("");
+
+    $effect(() => {
+        if (open) {
+            maxConcurrencyInput = appConfig.maxConcurrency != null ? String(appConfig.maxConcurrency) : "";
+        }
+    });
 
     function handleSave() {
+        const parsed = maxConcurrencyInput.trim() ? parseInt(maxConcurrencyInput, 10) : null;
+        appConfig.maxConcurrency = parsed != null && parsed >= 1 && parsed <= 32 ? parsed : null;
         appConfig.save();
         open = false;
     }
 
     function handleReset() {
         appConfig.resetPrefs();
+        maxConcurrencyInput = "";
     }
 </script>
 
@@ -79,6 +88,24 @@
                     id="overwrite"
                     bind:checked={appConfig.overwriteExisting}
                 />
+            </div>
+            <div class="flex flex-col space-y-2">
+                <Label for="maxConcurrency" class="text-sm font-medium"
+                    >Max Concurrent Items</Label
+                >
+                <input
+                    id="maxConcurrency"
+                    type="number"
+                    min="1"
+                    max="32"
+                    placeholder="Auto (CPU cores)"
+                    class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    bind:value={maxConcurrencyInput}
+                />
+                <p class="text-[11px] text-muted-foreground">
+                    Limit parallel processing. Leave empty for auto (CPU cores).
+                    Lower values help with rate limits or disk I/O.
+                </p>
             </div>
         </div>
         <DialogFooter>

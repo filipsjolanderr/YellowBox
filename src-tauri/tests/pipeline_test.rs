@@ -19,11 +19,12 @@ async fn test_end_to_end_extraction_pipeline() {
     // 2. Insert a dummy memory item
     let memory_id = "test-memory-uuid".to_string();
     let memory_item = MemoryItem {
+        segment_ids: None,
         id: memory_id.clone(),
         download_url: "http://example.com/mem.zip".to_string(),
         original_date: "2024-05-15 10:15:30 UTC".to_string(),
         location: Some("40.7128, -74.0060".to_string()),
-        state: ProcessingState::Downloaded, // Start at Downloaded to skip network Request mock
+        state: ProcessingState::Acquired, // Start at Acquired to skip network request mock
         error_message: None,
         extension: Some("jpg".to_string()),
         has_overlay: false,

@@ -1,4 +1,5 @@
 use std::path::Path;
+use tracing::info;
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
@@ -44,21 +45,40 @@ pub async fn combine_image(
     .map_err(|e| e.to_string())?
 }
 
+fn ffmpeg_path_arg(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    if s.contains(' ') || s.contains('"') {
+        format!("\"{}\"", s.replace('"', "\\\""))
+    } else {
+        s.into_owned()
+    }
+}
+
 pub async fn combine_video(
     app: &AppHandle,
     main_path: &Path,
     overlay_path: &Path,
     dest_path: &Path,
 ) -> Result<(), String> {
+    if !overlay_path.exists() {
+        return Err(format!(
+            "Overlay file not found: {}",
+            overlay_path.display()
+        ));
+    }
+    let main_arg = ffmpeg_path_arg(main_path);
+    let overlay_arg = ffmpeg_path_arg(overlay_path);
+    let dest_arg = ffmpeg_path_arg(dest_path);
+
     let command = app
         .shell()
         .sidecar("ffmpeg")
         .map_err(|e| e.to_string())?
         .args([
             "-i",
-            &main_path.to_string_lossy(),
+            &main_arg,
             "-i",
-            &overlay_path.to_string_lossy(),
+            &overlay_arg,
             "-filter_complex",
             "[1:v][0:v]scale2ref[ov][main];[main][ov]overlay=0:0",
             "-c:v",
@@ -68,12 +88,13 @@ pub async fn combine_video(
             "-c:a",
             "copy",
             "-y",
-            &dest_path.to_string_lossy(),
+            &dest_arg,
         ]);
 
     let output = command.output().await.map_err(|e| e.to_string())?;
 
     if output.status.success() {
+        info!(dest = %dest_path.display(), "combined video with overlay");
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())

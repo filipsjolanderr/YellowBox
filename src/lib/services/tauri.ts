@@ -39,12 +39,25 @@ export const tauriService = {
         return result ?? {};
     },
 
-    async startPipeline(sessionId: string, overwriteExisting: boolean): Promise<void> {
-        await invoke("start_pipeline", { sessionId, overwriteExisting });
+    async startPipeline(sessionId: string, overwriteExisting: boolean, maxConcurrency?: number | null, outputPath?: string | null): Promise<void> {
+        await invoke("start_pipeline", {
+            sessionId,
+            overwriteExisting,
+            maxConcurrency: maxConcurrency ?? null,
+            outputPath: outputPath ?? null,
+        });
     },
 
     async pausePipeline(sessionId: string): Promise<void> {
         await invoke("pause_pipeline", { sessionId });
+    },
+
+    async checkOverlayExists(outputDir: string, memoryId: string, cleanDate: string): Promise<boolean> {
+        return await invoke<boolean>("check_overlay_exists", {
+            outputDir,
+            memoryId,
+            cleanDate,
+        });
     },
 
     async retryItem(sessionId: string, itemId: string): Promise<void> {

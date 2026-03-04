@@ -6,12 +6,12 @@
     let { session } = $props<{ session: Session }>();
 
     const chartConfig = {
-        pending: { label: "Pending", color: "var(--color-muted-foreground)" },
-        downloaded: { label: "Downloaded", color: "var(--color-chart-1)" },
-        extracted: { label: "Extracted", color: "var(--color-chart-2)" },
-        combined: { label: "Combined", color: "var(--color-chart-3)" },
-        completed: { label: "Completed", color: "var(--color-chart-4)" },
-        failed: { label: "Failed", color: "var(--color-destructive)" },
+        pending: { label: "Queued", color: "var(--color-muted-foreground)" },
+        downloaded: { label: "Acquired", color: "var(--color-chart-1)" },
+        extracted: { label: "Unpacked", color: "var(--color-chart-2)" },
+        combined: { label: "Composited", color: "var(--color-chart-3)" },
+        completed: { label: "Done", color: "var(--color-chart-4)" },
+        failed: { label: "Error", color: "var(--color-destructive)" },
     } satisfies Chart.ChartConfig;
 
     let chartData = $derived([
