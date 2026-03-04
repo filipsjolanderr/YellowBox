@@ -23,6 +23,18 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
             msg.raw_path = Some(path);
             return Ok(());
         }
+        let base_name = format!("{}-raw.", msg.item.id);
+        if let Ok(mut entries) = tokio::fs::read_dir(&ctx.dest_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name.starts_with(&base_name) && !name.ends_with(".tmp") {
+                        info!(id = %msg.item.id, path = %entry.path().display(), "acquire: found raw file by prefix");
+                        msg.raw_path = Some(entry.path());
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if let Some(ref zip_path) = ctx.export_path {
             match try_extract_from_source_zip(ctx, &msg.item, zip_path).await {
                 Ok(found_path) => {
@@ -46,6 +58,17 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
         info!(id = %msg.item.id, path = %path.display(), "acquire: found existing raw (non-pending)");
         msg.raw_path = Some(path);
         return Ok(());
+    }
+    let base_name = format!("{}-raw.", msg.item.id);
+    let mut entries = tokio::fs::read_dir(&ctx.dest_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.starts_with(&base_name) && !name.ends_with(".tmp") {
+                info!(id = %msg.item.id, path = %entry.path().display(), "acquire: found raw by prefix (non-pending)");
+                msg.raw_path = Some(entry.path());
+                return Ok(());
+            }
+        }
     }
     if msg.item.state != ProcessingState::Pending && msg.item.state != ProcessingState::Acquired {
         msg.raw_path = Some(PathBuf::new());

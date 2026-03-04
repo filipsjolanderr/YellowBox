@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { ask, open } from "@tauri-apps/plugin-dialog";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { parseMemoriesJson, type ParsedMemory } from "$lib/parser";
   import confetti from "canvas-confetti";
   import { toast } from "svelte-sonner";
@@ -8,6 +9,7 @@
   import { fade } from "svelte/transition";
   import { tweened, type Tweened } from "svelte/motion";
   import type { UnlistenFn } from "@tauri-apps/api/event";
+  import { onMount } from "svelte";
 
   import Header from "$lib/components/Header.svelte";
   import StatsPanel from "$lib/components/StatsPanel.svelte";
@@ -97,7 +99,16 @@
     return result;
   }
 
-  function handleCloseTab(id: string) {
+  async function handleCloseTab(id: string) {
+    const tab = tabs.find((t) => t.id === id);
+    if (tab?.isProcessing) {
+      const confirmed = await ask(
+        `Backup "${tab.name}" is currently in progress. Are you sure you want to close this tab and stop the backup?`,
+        { title: "Confirm Close Tab", kind: "warning" },
+      );
+      if (!confirmed) return;
+    }
+
     tauriService.closeSession(id).catch(console.error);
     const index = tabs.findIndex((t) => t.id === id);
     if (index !== -1) {
@@ -121,7 +132,7 @@
       tauriService.clearPreviewTemp(tab.id).catch(() => {});
 
       if (tab.failedCount === 0) {
-        toast.success(`${tab.name} Backup Successful! ✨`);
+        toast.success(`${tab.name} successful!`);
         confetti({
           particleCount: 150,
           spread: 70,
@@ -156,10 +167,14 @@
       tab.selectedZip = appConfig.lastZip;
       tab.selectedOutput = appConfig.lastOutput;
 
+      tab.isParsingZip = true;
+      tab.parsingProgress.set(50, { duration: 1000 });
+
       tauriService
         .checkZipStructure(tab.id, tab.selectedZip)
         .then((content) => {
           tab.parsedItems = parseMemoriesJson(content);
+          tab.isParsingZip = false;
         })
         .catch((err) => {
           console.error("Auto reload zip fail", err);
@@ -168,6 +183,7 @@
           appConfig.lastZip = null;
           appConfig.lastOutput = null;
           appConfig.save();
+          tab.isParsingZip = false;
         });
     }
   });
@@ -185,27 +201,39 @@
       !tab.isInitializingDb
     ) {
       tab.isInitializingDb = true;
+      tab.parsingProgress.set(80, { duration: 1000 });
       const zipPath = tab.selectedZip;
       const ids = collectIdsForExtraction(tab.parsedItems);
-      tauriService
-        .extractPreviewMedia(tab.id, zipPath, ids)
-        .then(() => tauriService.resolveLocalMediaPaths(tab.id, ids))
-        .then((paths) => {
-          tab.resolvedLocalPaths = mapPathsToPrimaryIds(paths, tab.parsedItems);
+      const preparePreviews = tab.hasExtractedPreviews
+        ? Promise.resolve()
+        : tauriService
+            .extractPreviewMedia(tab.id, zipPath, ids)
+            .then(() => {
+              tab.parsingProgress.set(90, { duration: 1000 });
+              return tauriService.resolveLocalMediaPaths(tab.id, ids);
+            })
+            .then((paths) => {
+              tab.resolvedLocalPaths = mapPathsToPrimaryIds(
+                paths,
+                tab.parsedItems,
+              );
+              tab.hasExtractedPreviews = true;
+            });
+
+      preparePreviews
+        .then(() => {
           return tauriService.initializeAndLoad(
             tab.id,
             tab.selectedOutput!,
             tab.parsedItems,
           );
         })
-        .then((items) => {
+        .then(async (items) => {
           tab.memories = items as ParsedMemory[];
-          toast.success(
-            `Loaded ${tab.memories.length} memories into ${tab.name}!`,
-          );
+          await tab.parsingProgress.set(100, { duration: 500 });
         })
         .catch((err) => {
-          toast.error(`DB Init Error: ${err}`);
+          toast.error(`DB Init error: ${err}`);
         })
         .finally(() => {
           tab.isInitializingDb = false;
@@ -221,8 +249,6 @@
       tab.isParsingZip = true;
       tab.parsingProgress.set(0, { duration: 0 });
 
-      await new Promise((r) => setTimeout(r, 600));
-
       tab.parsingProgress.set(85, { duration: 2500 });
       tab.selectedZip = path;
 
@@ -236,16 +262,12 @@
         tab.isParsingZip = false;
         tab.selectedZip = null;
       } else {
-        await tab.parsingProgress.set(100, { duration: 500 });
-        await new Promise((r) => setTimeout(r, 800));
-
-        toast.success(`${tab.name} Loaded Zip.`);
         appConfig.lastZip = path;
         appConfig.save();
-        tab.isParsingZip = false;
 
         // Extract media to temp folder for local previews (no CDN)
         const ids = collectIdsForExtraction(tab.parsedItems);
+        tab.parsingProgress.set(98, { duration: 3000 });
         try {
           await tauriService.extractPreviewMedia(tab.id, path, ids);
           const paths = await tauriService.resolveLocalMediaPaths(tab.id, ids);
@@ -253,6 +275,11 @@
         } catch (e) {
           console.warn("Preview extraction failed, will use remote URLs:", e);
         }
+        tab.hasExtractedPreviews = true;
+
+        await tab.parsingProgress.set(100, { duration: 500 });
+        tab.isParsingZip = false;
+        toast.success(`${tab.name} ready!`);
       }
     } catch (err) {
       toast.error(`Error processing zip: ${err}`);
@@ -296,7 +323,7 @@
         appConfig.save();
       }
     } catch (err) {
-      toast.error(`Directory Error: ${err}`);
+      toast.error(`Directory error: ${err}`);
     }
   }
 
@@ -305,7 +332,7 @@
     if (!tab) return;
 
     tab.isProcessing = true;
-    toast.info(`Starting backup pipeline for ${tab.name}...`);
+    toast.info(`Starting ${tab.name}...`);
     try {
       await tauriService.startPipeline(
         tab.id,
@@ -324,7 +351,7 @@
     if (!tab) return;
 
     if (tab.isPaused) {
-      toast.info(`Resuming backup pipeline for ${tab.name}...`);
+      toast.info(`Resuming ${tab.name}...`);
       tab.isProcessing = true;
       try {
         await tauriService.startPipeline(
@@ -338,7 +365,7 @@
         toast.error(`Pipeline resume error: ${err}`);
       }
     } else {
-      toast.info(`Pausing backup pipeline for ${tab.name}...`);
+      toast.info(`Pausing ${tab.name}...`);
       try {
         await tauriService.pausePipeline(tab.id);
         tab.isPaused = true;
@@ -362,7 +389,7 @@
   />
 
   {#if activeTab}
-    {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip}
+    {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip && (!activeTab.isInitializingDb || activeTab.hasExtractedPreviews)}
       <div in:fade={{ duration: 300, delay: 150 }}>
         <StatsPanel
           session={activeTab}
@@ -374,7 +401,7 @@
     {/if}
 
     <main class="flex-1 overflow-hidden bg-muted/10 relative">
-      {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip}
+      {#if activeTab.selectedZip && (activeTab.memories.length > 0 || activeTab.parsedItems.length > 0) && !activeTab.isParsingZip && (!activeTab.isInitializingDb || activeTab.hasExtractedPreviews)}
         <div
           in:fade={{ duration: 300, delay: 300 }}
           out:fade={{ duration: 300 }}
@@ -399,7 +426,7 @@
         >
           <SetupCard
             selectedZip={activeTab.selectedZip}
-            isParsing={activeTab.isParsingZip}
+            isParsing={activeTab.isParsingZip || activeTab.isInitializingDb}
             progressValue={$progressStore}
             onSelectZip={handleSelectZip}
             onDropZip={processZipPath}

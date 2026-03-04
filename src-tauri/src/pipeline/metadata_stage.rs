@@ -5,23 +5,30 @@ use crate::error::Result;
 use crate::metadata;
 use crate::models::ProcessingState;
 use crate::pipeline::types::{PipelineContext, PipelineMessage};
-use crate::pipeline::zip::{is_video_ext, RAW_FILE_EXTENSIONS};
+use crate::pipeline::zip::is_video_ext;
 use std::path::Path;
 use tracing::info;
 
 /// Removes all intermediate files (raw, main, overlay, seg) for this memory when done.
 async fn remove_intermediate_files(dest_dir: &Path, id: &str) {
-    // 1. Raw, main, and overlay files
-    for ext in RAW_FILE_EXTENSIONS {
-        let _ = tokio::fs::remove_file(dest_dir.join(format!("{}-raw.{}", id, ext))).await;
-        let _ = tokio::fs::remove_file(dest_dir.join(format!("{}-main.{}", id, ext))).await;
-        let _ = tokio::fs::remove_file(dest_dir.join(format!("{}-overlay.{}", id, ext))).await;
-    }
-
-    // 2. Segments (typically 0-9)
-    for i in 0..10 {
-        for ext in RAW_FILE_EXTENSIONS {
-            let _ = tokio::fs::remove_file(dest_dir.join(format!("{}-seg{}.{}", id, i, ext))).await;
+    let prefixes = [
+        format!("{}-raw.", id),
+        format!("{}-main.", id),
+        format!("{}-overlay.", id),
+        format!("{}-seg", id),
+    ];
+    if let Ok(mut entries) = tokio::fs::read_dir(dest_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Some(name) = entry.file_name().to_str() {
+                let name_lower = name.to_lowercase();
+                if prefixes.iter().any(|p| name_lower.starts_with(&p.to_lowercase())) {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        info!(id = %id, file = %name, "metadata: removed intermediate file");
+                    }
+                }
+            }
         }
     }
 }

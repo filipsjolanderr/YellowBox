@@ -4,9 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Known extensions for raw memory files (from downloader.rs).
-pub(crate) const RAW_FILE_EXTENSIONS: &[&str] = &[
-    "zip", "mp4", "jpg", "jpeg", "mov", "png", "gif", "webm", "heic",
-];
+pub(crate) const RAW_FILE_EXTENSIONS: &[&str] = &["zip", "mp4", "jpg", "mov"];
 
 pub fn is_video_ext(ext: &str) -> bool {
     let lower = ext.to_lowercase();

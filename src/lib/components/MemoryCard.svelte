@@ -97,7 +97,7 @@
     function getStateColor(state: string) {
         switch (state) {
             case "Pending":
-                return "bg-secondary text-black";
+                return "bg-secondary text-secondary-foreground";
             case "Downloaded":
                 return "bg-blue-500 text-white";
             case "Extracted":
@@ -107,9 +107,9 @@
             case "Completed":
                 return "bg-green-500 text-white";
             case "Failed":
-                return "bg-destructive text-destructive";
+                return "bg-destructive text-white";
             default:
-                return "bg-secondary";
+                return "bg-secondary text-black";
         }
     }
 
@@ -253,22 +253,22 @@
 </script>
 
 <Card
-    class="group relative overflow-hidden transition-all hover:border-primary/50 hover:shadow-sm rounded-[4px] border border-border/50 p-0"
+    class="relative overflow-hidden rounded-[4px] border border-border/50 p-0"
 >
     <div class="aspect-[9/16] bg-black/5 relative overflow-hidden">
         {#if isMaybeVideo(memory)}
             <video
                 use:lazyLoadVideo={videoSrc}
-                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 opacity-0 group-hover:opacity-100 z-10"
+                class="absolute inset-0 h-full w-full object-cover transition-opacity duration-300 z-10 {hasLoadedSuccessfully
+                    ? isDone
+                        ? 'opacity-100'
+                        : 'opacity-70'
+                    : 'opacity-0'}"
                 preload="none"
                 muted
                 playsinline
                 onloadeddata={(e) => {
                     hasLoadedSuccessfully = true;
-                    const vid = e.currentTarget as HTMLVideoElement;
-                    vid.style.display = "";
-                    vid.classList.remove("opacity-0");
-                    vid.classList.add("opacity-50", "group-hover:opacity-100");
                 }}
                 onerror={(e) => {
                     const vid = e.currentTarget as HTMLVideoElement;
@@ -305,16 +305,14 @@
             <img
                 src={imageSrc}
                 alt="Memory"
-                class="absolute inset-0 h-full w-full object-cover transition-all duration-700 {imageSrc
-                    ? 'opacity-50 group-hover:opacity-100'
-                    : 'opacity-0'} z-10"
+                class="absolute inset-0 h-full w-full object-cover transition-opacity duration-300 z-10 {hasLoadedSuccessfully
+                    ? isDone
+                        ? 'opacity-100'
+                        : 'opacity-70'
+                    : 'opacity-0'}"
                 loading="lazy"
                 onload={(e) => {
                     hasLoadedSuccessfully = true;
-                    const img = e.currentTarget as HTMLImageElement;
-                    img.style.display = "";
-                    img.classList.remove("opacity-0");
-                    img.classList.add("opacity-50", "group-hover:opacity-100");
                 }}
                 onerror={(e) => {
                     const img = e.currentTarget as HTMLImageElement;
@@ -414,44 +412,41 @@
             </div>
         {/if}
 
-        <Badge
-            variant="secondary"
-            class="absolute top-1.5 left-1.5 z-20 h-5 w-5 p-0 flex items-center justify-center bg-background/60 backdrop-blur-md shadow-sm border-0"
-        >
-            {#if isMaybeVideo(memory)}
-                <Video class="h-3 w-3 text-foreground/80" />
-            {:else}
-                <ImageIcon class="h-3 w-3 text-foreground/80" />
-            {/if}
-        </Badge>
-
         <div
-            class="absolute top-1.5 right-1.5 z-20 flex flex-col gap-1 items-end pointer-events-none"
+            class="absolute top-2 left-2 z-20 flex flex-col gap-1 items-start pointer-events-none"
         >
             <Badge
                 variant="secondary"
-                class="text-[8px] px-1.5 py-0 h-4 border-0 shadow-sm rounded-[3px] font-medium leading-none bg-background/80 backdrop-blur-md text-foreground/80"
+                class="text-[10px] px-2 py-1 flex items-center gap-1.5 border-0 shadow-md rounded-md font-bold bg-background/90 backdrop-blur-md text-foreground"
             >
-                {new Date(memory.originalDate).toLocaleDateString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                    year: "2-digit",
-                })}
+                {#if isMaybeVideo(memory)}
+                    <Video class="h-3.5 w-3.5" />
+                {:else}
+                    <ImageIcon class="h-3.5 w-3.5" />
+                {/if}
+                <span>
+                    {new Date(memory.originalDate).toLocaleDateString(
+                        undefined,
+                        {
+                            month: "short",
+                            day: "numeric",
+                            year: "2-digit",
+                        },
+                    )}
+                </span>
             </Badge>
         </div>
 
         <div
-            class="absolute bottom-0 left-0 right-0 p-1.5 pb-1.5 flex justify-end items-end bg-gradient-to-t from-black/80 via-black/30 to-transparent z-20 pointer-events-none"
+            class="absolute bottom-0 left-0 right-0 p-2 pb-3 flex justify-center items-end bg-gradient-to-t from-black/90 via-black/40 to-transparent z-20 pointer-events-none"
         >
-            <div class="flex flex-col gap-1 items-end">
-                <Badge
-                    class="text-[9px] px-1.5 py-0 h-4 {getStateColor(
-                        memory.state,
-                    )} border-0 shadow-sm rounded-[3px] font-medium leading-none text-white"
-                >
-                    {getStateLabel(memory.state)}
-                </Badge>
-            </div>
+            <Badge
+                class="text-[11px] px-3 py-1 {getStateColor(
+                    memory.state,
+                )} border-0 shadow-lg rounded-md font-bold uppercase tracking-wide"
+            >
+                {getStateLabel(memory.state)}
+            </Badge>
         </div>
     </div>
 </Card>

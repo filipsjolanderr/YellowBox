@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Button } from "$lib/components/ui/button";
     import * as Tabs from "$lib/components/ui/tabs";
-    import { Minus, Square, X, PlusCircle, XCircle } from "lucide-svelte";
+    import { Minus, Square, X, PlusCircle, XCircle, Plus } from "lucide-svelte";
     import ThemeToggle from "./ThemeToggle.svelte";
     import SettingsPanel from "./SettingsPanel.svelte";
     import AboutPanel from "./AboutPanel.svelte";
@@ -78,27 +78,23 @@
                             <span class="font-medium">{tab.name}</span>
                             {#if tab.totalCount > 0}
                                 <span
-                                    class="text-[10px] flex items-center justify-center text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded-sm"
+                                    class="text-[10px] flex items-center justify-center text-muted-foreground font-mono bg-muted px-1.5 rounded-sm"
                                 >
                                     {tab.completedCount}/{tab.totalCount}
                                 </span>
                             {/if}
-                            <Tooltip.Root>
-                                <Tooltip.Trigger>
-                                    <button
-                                        onclick={(e) => {
-                                            e.stopPropagation();
-                                            onCloseTab(tab.id);
-                                        }}
-                                        class="flex items-center justify-center text-muted-foreground hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity -mr-1 cursor-pointer"
-                                    >
-                                        <XCircle class="h-3.5 w-3.5" />
-                                    </button>
-                                </Tooltip.Trigger>
-                                <Tooltip.Content sideOffset={4}>
-                                    <p>Close Tab</p>
-                                </Tooltip.Content>
-                            </Tooltip.Root>
+                            <button
+                                onclick={(e) => {
+                                    e.stopPropagation();
+                                    onCloseTab(tab.id);
+                                }}
+                                class="flex items-center justify-center text-muted-foreground {tab.id ===
+                                activeTabId
+                                    ? 'opacity-100'
+                                    : 'opacity-0 group-hover:opacity-100'} transition-opacity -mr-1 cursor-pointer"
+                            >
+                                <X class="h-3.5 w-3.5" />
+                            </button>
                         </Tabs.Trigger>
                     {/each}
                     {#if tabs.length < 3}
@@ -106,8 +102,8 @@
                             onclick={onNewTab}
                             class="ml-2 px-2 py-1 text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm bg-transparent hover:bg-muted/50 rounded-md transition-colors cursor-pointer"
                         >
-                            <PlusCircle class="h-4 w-4" />
-                            <span class="sr-only">New Backup</span>
+                            <Plus class="h-4 w-4" />
+                            <span class="sr-only">New backup</span>
                         </button>
                     {/if}
                 </Tabs.List>
@@ -163,7 +159,7 @@
                         class="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted"
                         onclick={toggleMaximize}
                     >
-                        <Square class="h-3 w-3" />
+                        <Square class="h-4 w-4" />
                     </Button>
                 </Tooltip.Trigger>
                 <Tooltip.Content sideOffset={4}>

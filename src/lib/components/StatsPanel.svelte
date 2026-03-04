@@ -5,6 +5,12 @@
     import { Play, RefreshCw, FolderOpen, ChartNetwork } from "lucide-svelte";
     import type { ParsedMemory } from "$lib/parser";
     import { revealItemInDir } from "@tauri-apps/plugin-opener";
+    import {
+        Tooltip,
+        TooltipContent,
+        TooltipTrigger,
+        TooltipProvider,
+    } from "$lib/components/ui/tooltip";
     import StatusTracker from "./StatusTracker.svelte";
     import type { Session } from "$lib/session.svelte";
 
@@ -59,11 +65,11 @@
                                 class="h-2 w-2 rounded-full bg-green-500"
                             ></div>
                             <span class="font-medium text-green-500"
-                                >Backup Complete</span
+                                >Backup complete</span
                             >
                         {:else}
                             <span class="text-muted-foreground"
-                                >Ready to Backup</span
+                                >Ready to backup</span
                             >
                         {/if}
                     </div>
@@ -90,23 +96,42 @@
                     <Button
                         variant="outline"
                         onclick={onSelectOutput}
-                        class="pulse-glow border-2 border-primary text-primary font-semibold shadow-md ring-2 ring-primary/20 hover:ring-primary/40 hover:bg-primary/5 min-w-[200px]"
+                        class="pulse-glow border-2 text-primary font-semibold shadow-md ring-2 ring-primary/20 hover:ring-primary/40 hover:bg-primary/5 min-w-[200px]"
                     >
                         <FolderOpen class="mr-2 h-4 w-4" />
-                        Select Destination Folder
+                        Select destination folder
                     </Button>
                 {:else}
-                    <Button
-                        variant="outline"
-                        onclick={onSelectOutput}
-                        class="text-xs truncate max-w-xs font-mono border-primary/40 bg-primary/5 hover:bg-primary/10"
-                        title={selectedOutput}
-                    >
-                        <FolderOpen class="mr-1.5 h-3.5 w-3.5 shrink-0" />
-                        {selectedOutput}
-                    </Button>
+                    <TooltipProvider delayDuration={150}>
+                        <Tooltip>
+                            <TooltipTrigger>
+                                {#snippet child({ props })}
+                                    <Button
+                                        {...props}
+                                        variant="outline"
+                                        onclick={onSelectOutput}
+                                        class="text-xs truncate max-w-xs font-mono bg-primary/5 hover:bg-primary/10"
+                                    >
+                                        <FolderOpen
+                                            class="mr-1.5 h-3.5 w-3.5 shrink-0"
+                                        />
+                                        {selectedOutput}
+                                    </Button>
+                                {/snippet}
+                            </TooltipTrigger>
+                            <TooltipContent>
+                                <span class=" text-xs"
+                                    >Change destination folder</span
+                                >
+                            </TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
                     {#if !isReadyForBackup}
-                        <Button disabled class="min-w-[140px] opacity-70" title="Waiting for setup to finish...">
+                        <Button
+                            disabled
+                            class="min-w-[140px] opacity-70"
+                            title="Waiting for setup to finish..."
+                        >
                             <RefreshCw class="mr-2 h-4 w-4 animate-spin" />
                             Preparing...
                         </Button>
@@ -150,10 +175,10 @@
                     {:else}
                         <Button
                             onclick={onStartBackup}
-                            class="pulse-glow bg-primary text-primary-foreground hover:bg-primary/90 min-w-[140px] font-semibold shadow-md ring-2 ring-primary/30 hover:ring-primary/50"
+                            class="pulse-glow bg-primary text-primary-foreground hover:bg-primary/90 min-w-[140px] h-9 font-semibold shadow-md ring-2 ring-primary/30 hover:ring-primary/50"
                         >
                             <Play class="mr-2 h-4 w-4" />
-                            Start Backup
+                            Start backup
                         </Button>
                     {/if}
                 {/if}

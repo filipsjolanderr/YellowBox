@@ -6,42 +6,42 @@
     let { session } = $props<{ session: Session }>();
 
     const chartConfig = {
-        pending: { label: "Queued", color: "var(--color-muted-foreground)" },
-        downloaded: { label: "Acquired", color: "var(--color-chart-1)" },
-        extracted: { label: "Unpacked", color: "var(--color-chart-2)" },
-        combined: { label: "Composited", color: "var(--color-chart-3)" },
-        completed: { label: "Done", color: "var(--color-chart-4)" },
+        pending: { label: "Queued", color: "var(--color-secondary)" },
+        downloaded: { label: "Acquired", color: "#3b82f6" }, // blue-500
+        extracted: { label: "Unpacked", color: "#fb923c" }, // orange-400
+        combined: { label: "Composited", color: "#facc15" }, // yellow-400
+        completed: { label: "Done", color: "#22c55e" }, // green-500
         failed: { label: "Error", color: "var(--color-destructive)" },
     } satisfies Chart.ChartConfig;
 
     let chartData = $derived([
         {
-            state: "pending",
+            state: "Queued",
             count: session.pendingCount,
             color: chartConfig.pending.color,
         },
         {
-            state: "downloaded",
+            state: "Acquired",
             count: session.downloadedCount,
             color: chartConfig.downloaded.color,
         },
         {
-            state: "extracted",
+            state: "Unpacked",
             count: session.extractedCount,
             color: chartConfig.extracted.color,
         },
         {
-            state: "combined",
+            state: "Composited",
             count: session.combinedCount,
             color: chartConfig.combined.color,
         },
         {
-            state: "completed",
+            state: "Done",
             count: session.completedCount,
             color: chartConfig.completed.color,
         },
         {
-            state: "failed",
+            state: "Error",
             count: session.failedCount,
             color: chartConfig.failed.color,
         },
