@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::path::PathBuf;
+use tauri::Manager;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub mod combiner;
@@ -65,6 +66,20 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // Clean orphaned preview temp dirs from previous runs (crashes, force-quit, etc.)
+            if let Ok(temp_dir) = app.path().temp_dir() {
+                let preview_root = temp_dir.join("yellowbox_preview");
+                if preview_root.exists() {
+                    if let Err(e) = std::fs::remove_dir_all(&preview_root) {
+                        tracing::warn!(path = %preview_root.display(), error = %e, "failed to clean orphaned preview temp dir");
+                    } else {
+                        tracing::info!(path = %preview_root.display(), "cleaned orphaned preview temp dir");
+                    }
+                }
+            }
+            Ok(())
+        })
         .manage(commands::AppState {
             sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
         })

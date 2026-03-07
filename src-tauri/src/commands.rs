@@ -108,7 +108,11 @@ pub async fn get_memories_state(session_id: String, state: State<'_, AppState>) 
 #[tauri::command]
 pub fn reset_application(session_id: String, state: State<'_, AppState>) -> Result<()> {
     let mut sessions = state.sessions.lock().unwrap();
-    sessions.remove(&session_id);
+    if let Some(session) = sessions.remove(&session_id) {
+        if let Some(ref preview_dir) = session.preview_dir {
+            let _ = std::fs::remove_dir_all(preview_dir);
+        }
+    }
     Ok(())
 }
 
