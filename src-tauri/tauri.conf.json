@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Yellowbox",
-        "width": 1500,
+        "width": 1000,
         "height": 1000,
-        "minWidth": 1500,
-        "minHeight": 1000,
+        "minWidth": 700,
+        "minHeight": 700,
         "decorations": false
       }
     ],
@@ -24,7 +24,9 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       }
     }
   },

@@ -27,7 +27,7 @@
     let completedCount = $derived(session.completedCount);
     let progressPercentage = $derived(session.progressPercentage);
     let isAllProcessed = $derived(session.isAllProcessed);
-    let selectedZip = $derived(session.selectedZip);
+    let selectedZips = $derived(session.selectedZips);
     let selectedOutput = $derived(session.selectedOutput);
     let isProcessing = $derived(session.isProcessing);
     let isPaused = $derived(session.isPaused);
@@ -83,7 +83,7 @@
 
         <!-- Right: Actions -->
         <div class="flex items-center gap-3">
-            {#if selectedZip && isAllProcessed}
+            {#if selectedZips.length > 0 && isAllProcessed}
                 <Button
                     onclick={handleOpenOutputFolder}
                     class="bg-green-500 hover:bg-green-600 text-white min-w-[140px]"
@@ -91,7 +91,7 @@
                     <FolderOpen class="mr-2 h-4 w-4" />
                     Open Folder
                 </Button>
-            {:else if selectedZip}
+            {:else if selectedZips.length > 0}
                 {#if !selectedOutput}
                     <Button
                         variant="outline"

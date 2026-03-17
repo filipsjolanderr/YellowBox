@@ -6,16 +6,14 @@ export class Session {
     id: string;
     name: string;
 
-    selectedZip: string | null = $state(null);
+    selectedZips: string[] = $state([]);
     selectedOutput: string | null = $state(null);
     parsedItems: ParsedMemory[] = $state([]);
     memories: ParsedMemory[] = $state([]);
-    resolvedLocalPaths: Record<string, string> = $state({});
     isProcessing = $state(false);
     isPaused = $state(false);
-    isParsingZip = $state(false);
+    isParsing = $state(false);
     isInitializingDb = $state(false);
-    hasExtractedPreviews = $state(false);
     parsingProgress = tweened(0, { duration: 400, easing: cubicOut });
     hasAttemptedLoad = $state(false);
 

@@ -11,9 +11,8 @@ use tauri::{AppHandle, State, Manager, Emitter};
 
 pub struct SessionState {
     pub db: Option<Arc<DbManager>>,
-    pub export_path: Option<PathBuf>,
+    pub export_paths: Vec<PathBuf>,
     pub output_dir: Option<PathBuf>,
-    pub preview_dir: Option<PathBuf>,
     pub is_cancelled: Arc<AtomicBool>,
 }
 
@@ -21,9 +20,8 @@ impl SessionState {
     pub fn new() -> Self {
         Self {
             db: None,
-            export_path: None,
+            export_paths: Vec::new(),
             output_dir: None,
-            preview_dir: None,
             is_cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -34,9 +32,11 @@ pub struct AppState {
 }
 
 #[tauri::command]
-pub async fn check_zip_structure(session_id: String, path: String, state: State<'_, AppState>) -> Result<String> {
+pub async fn check_zip_structure(session_id: String, path: String, state: State<'_, AppState>) -> Result<Option<String>> {
     info!(session_id = %session_id, path = %path, "check_zip_structure");
-    let path_clone = path.clone();
+    let path_buf = PathBuf::from(&path);
+    let path_clone = path_buf.clone();
+    
     let (json_content, _default_memories_dir) = tokio::task::spawn_blocking(move || {
         fs::extract_json_from_zip(Path::new(&path_clone))
     })
@@ -45,8 +45,10 @@ pub async fn check_zip_structure(session_id: String, path: String, state: State<
 
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions.entry(session_id.clone()).or_insert_with(SessionState::new);
-    session.export_path = Some(PathBuf::from(path));
-    info!(session_id = %session_id, "zip structure validated, JSON extracted");
+    if !session.export_paths.contains(&path_buf) {
+        session.export_paths.push(path_buf);
+    }
+    info!(session_id = %session_id, "zip structure validated");
     Ok(json_content)
 }
 
@@ -108,11 +110,7 @@ pub async fn get_memories_state(session_id: String, state: State<'_, AppState>) 
 #[tauri::command]
 pub fn reset_application(session_id: String, state: State<'_, AppState>) -> Result<()> {
     let mut sessions = state.sessions.lock().unwrap();
-    if let Some(session) = sessions.remove(&session_id) {
-        if let Some(ref preview_dir) = session.preview_dir {
-            let _ = std::fs::remove_dir_all(preview_dir);
-        }
-    }
+    let _ = sessions.remove(&session_id);
     Ok(())
 }
 
@@ -141,7 +139,7 @@ pub async fn start_pipeline(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<()> {
-    let (dest_dir, db, cancel_token, export_path) = {
+    let (dest_dir, db, cancel_token, export_paths) = {
         let mut sessions = state.sessions.lock().unwrap();
         let session = sessions.get_mut(&session_id).ok_or_else(|| "Session not found".to_string())?;
         
@@ -155,9 +153,9 @@ pub async fn start_pipeline(
         
         session.is_cancelled.store(false, Ordering::SeqCst);
         let cancel_token = Arc::clone(&session.is_cancelled);
-        let export_path = session.export_path.clone();
+        let export_paths = session.export_paths.clone();
         
-        (dest, db, cancel_token, export_path)
+        (dest, db, cancel_token, export_paths)
     };
 
     // If restarting after a pause or failure, reset items back to Pending
@@ -175,7 +173,7 @@ pub async fn start_pipeline(
 
     // Build main + overlay ZIP indexes for fast extraction (avoids O(n*m) scan per item)
     // Main index needs all segment IDs (split videos have multiple segments); overlay uses primary id
-    let (export_zip_index, export_overlay_index) = if let Some(ref zip_path) = export_path {
+    let (export_zip_index, export_overlay_index) = if !export_paths.is_empty() {
         let main_ids: Vec<String> = items_to_process
             .iter()
             .flat_map(|i| {
@@ -192,10 +190,10 @@ pub async fn start_pipeline(
                 segment_ids: i.segment_ids.clone(),
             })
             .collect();
-        let zip_path = zip_path.clone();
+        let export_paths_clone = export_paths.clone();
         let (main_idx, overlay_idx) = tokio::task::spawn_blocking(move || {
-            let main = crate::pipeline::build_main_media_zip_index(&zip_path, &main_ids).ok();
-            let overlay = crate::pipeline::build_overlay_zip_index(&zip_path, &overlay_items).ok();
+            let main = crate::pipeline::build_main_media_zip_index(&export_paths_clone, &main_ids).ok();
+            let overlay = crate::pipeline::build_overlay_zip_index(&export_paths_clone, &overlay_items).ok();
             (main, overlay)
         })
         .await
@@ -217,7 +215,7 @@ pub async fn start_pipeline(
         db.clone(),
         app.clone(),
         dest_dir,
-        export_path,
+        export_paths,
         export_zip_index,
         export_overlay_index,
         session_id.clone(),
@@ -275,44 +273,7 @@ pub async fn pause_pipeline(session_id: String, state: State<'_, AppState>) -> R
     Ok(())
 }
 
-#[tauri::command]
-pub fn clear_preview_temp(session_id: String, state: State<'_, AppState>) -> Result<()> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = sessions.get_mut(&session_id) {
-        if let Some(ref preview_dir) = session.preview_dir.take() {
-            let _ = std::fs::remove_dir_all(preview_dir);
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn extract_preview_media(
-    session_id: String,
-    zip_path: String,
-    memory_ids: Vec<String>,
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<String> {
-    info!(session_id = %session_id, ids_count = memory_ids.len(), "extract_preview_media");
-    let app_temp = app.path().temp_dir().map_err(|e| e.to_string())?.to_path_buf();
-    let session_id_clone = session_id.clone();
-    let preview_dir = tokio::task::spawn_blocking(move || {
-        fs::extract_preview_to_temp(Path::new(&zip_path), &memory_ids, &app_temp, &session_id_clone)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = sessions.get_mut(&session_id).ok_or_else(|| "Session not found".to_string())?;
-    session.preview_dir = Some(preview_dir.clone());
-
-    let file_count = std::fs::read_dir(&preview_dir)
-        .map(|d| d.filter_map(|e| e.ok()).count())
-        .unwrap_or(0);
-    info!(session_id = %session_id, preview_dir = %preview_dir.display(), files = file_count, "extract_preview_media done");
-    Ok(preview_dir.to_string_lossy().to_string())
-}
+// DELETED extract_preview_media command
 
 #[tauri::command]
 pub fn resolve_local_media_paths(
@@ -323,14 +284,9 @@ pub fn resolve_local_media_paths(
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&session_id).ok_or_else(|| "Session not found".to_string())?;
     let output_dir = session.output_dir.as_ref();
-    let preview_dir = session.preview_dir.as_ref();
-    let scan_dirs: Vec<PathBuf> = output_dir
-        .into_iter()
-        .chain(preview_dir.into_iter())
-        .cloned()
-        .collect();
+    let scan_dirs: Vec<PathBuf> = output_dir.into_iter().cloned().collect();
     if scan_dirs.is_empty() {
-        return Err("No output or preview directory".into());
+        return Err("No output directory".into());
     }
     let id_set: std::collections::HashSet<String> = memory_ids.into_iter().collect();
     let result = fs::resolve_local_media_paths_batch(&scan_dirs, &id_set);

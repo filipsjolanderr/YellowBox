@@ -19,9 +19,11 @@ pub struct PipelineContext<R: MemoryRepository> {
     pub db: Arc<R>,
     pub app: AppHandle,
     pub dest_dir: PathBuf,
-    pub export_path: Option<PathBuf>,
-    pub export_zip_index: Option<Arc<HashMap<String, (usize, String)>>>,
-    pub export_overlay_index: Option<Arc<HashMap<String, (usize, String)>>>,
+    pub export_paths: Vec<PathBuf>,
+    /// Index: "date|id" -> (zip_file_index, zip_entry_index, extension)
+    pub export_zip_index: Option<Arc<HashMap<String, (usize, usize, String)>>>,
+    /// Index: "date|primary_id" -> (zip_file_index, zip_entry_index, extension)
+    pub export_overlay_index: Option<Arc<HashMap<String, (usize, usize, String)>>>,
     pub session_id: String,
     pub is_cancelled: Arc<AtomicBool>,
     pub http_client: reqwest::Client,
@@ -33,7 +35,7 @@ impl<R: MemoryRepository> Clone for PipelineContext<R> {
             db: Arc::clone(&self.db),
             app: self.app.clone(),
             dest_dir: self.dest_dir.clone(),
-            export_path: self.export_path.clone(),
+            export_paths: self.export_paths.clone(),
             export_zip_index: self.export_zip_index.clone(),
             export_overlay_index: self.export_overlay_index.clone(),
             session_id: self.session_id.clone(),

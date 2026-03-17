@@ -8,14 +8,12 @@
         sessionId,
         memories,
         selectedOutput,
-        resolvedLocalPaths = {},
         isProcessing = false,
         isAllProcessed = false,
     } = $props<{
         sessionId: string;
         memories: ParsedMemory[];
         selectedOutput: string | null;
-        resolvedLocalPaths?: Record<string, string>;
         isProcessing?: boolean;
         isAllProcessed?: boolean;
     }>();
@@ -40,7 +38,6 @@
                     {sessionId}
                     {memory}
                     {selectedOutput}
-                    resolvedLocalPath={resolvedLocalPaths[memory.id]}
                 />
             {/each}
         </div>

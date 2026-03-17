@@ -87,8 +87,6 @@ pub fn run() {
             commands::check_zip_structure,
             commands::initialize_and_load,
             commands::get_memories_state,
-            commands::clear_preview_temp,
-            commands::extract_preview_media,
             commands::resolve_local_media_paths,
             commands::start_pipeline,
             commands::pause_pipeline,

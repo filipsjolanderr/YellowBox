@@ -2,6 +2,8 @@
 //! For split videos (multiple segments), extracts and concatenates with ffmpeg.
 //! Uses direct lookup by date|segment_id - no canonical substitution.
 
+use std::collections::HashMap;
+
 use crate::db::MemoryRepository;
 use crate::error::Result;
 use crate::metadata;
@@ -35,8 +37,8 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
                 }
             }
         }
-        if let Some(ref zip_path) = ctx.export_path {
-            match try_extract_from_source_zip(ctx, &msg.item, zip_path).await {
+        if !ctx.export_paths.is_empty() {
+            match try_extract_from_source_zip(ctx, &msg.item).await {
                 Ok(found_path) => {
                     info!(id = %msg.item.id, path = %found_path.display(), "acquire: extracted from source ZIP");
                     msg.raw_path = Some(found_path);
@@ -85,7 +87,6 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
 pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
     ctx: &PipelineContext<R>,
     item: &crate::models::MemoryItem,
-    zip_path: &PathBuf,
 ) -> Result<PathBuf> {
     let segment_ids: Vec<String> = item
         .segment_ids
@@ -96,7 +97,6 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
     let clean_date = metadata::get_clean_date_prefix(&item.original_date);
     let overlay_clean_date = clean_date.clone();
 
-    let zip_path = zip_path.clone();
     let dest_dir = ctx.dest_dir.clone();
     let dest_dir_clone = dest_dir.clone();
     let main_index = ctx.export_zip_index.clone();
@@ -104,9 +104,9 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
     let id = item.id.clone();
     let id_for_final = id.clone();
 
-    let segment_paths: Vec<PathBuf> = tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let export_paths = ctx.export_paths.clone();
+    let segment_paths = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<PathBuf>, String> {
+        let mut archive_cache: HashMap<usize, zip::ZipArchive<std::fs::File>> = HashMap::new();
         let mut paths = Vec::new();
         let mut id_from_main_filename: Option<String> = None;
 
@@ -123,30 +123,52 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                 } else {
                     None
                 };
-                let (zip_index, ext) = match idx
+                let (zip_file_idx, zip_entry_idx, ext) = match idx
                     .get(&key_exact)
                     .or_else(|| key_date_only.as_ref().and_then(|k| idx.get(k)))
                     .or_else(|| key_fallback.as_ref().and_then(|k| idx.get(k)))
                 {
-                    Some(r) => (r.0, r.1.clone()),
-                    None => scan_main_by_date_and_id(
-                        &mut archive,
-                        &clean_date,
-                        if clean_date.len() >= 10 {
-                            Some(&clean_date[..10])
-                        } else {
-                            None
-                        },
-                        seg_id,
-                    )
-                    .ok_or_else(|| {
-                        format!(
-                            "Segment {} not in ZIP index (tried {}) and scan found no match",
-                            seg_id, key_exact
-                        )
-                    })?,
+                    Some(r) => (r.0, r.1, r.2.clone()),
+                    None => {
+                        // Fallback scan across all zips if not in index
+                        let mut found = None;
+                        for (z_idx, z_path) in export_paths.iter().enumerate() {
+                            let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
+                            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                            if let Some((e_idx, ext)) = scan_main_by_date_and_id(
+                                &mut archive,
+                                &clean_date,
+                                if clean_date.len() >= 10 {
+                                    Some(&clean_date[..10])
+                                } else {
+                                    None
+                                },
+                                seg_id,
+                            ) {
+                                found = Some((z_idx, e_idx, ext));
+                                break;
+                            }
+                        }
+                        found.ok_or_else(|| {
+                            format!(
+                                "Segment {} not in ZIP index and scan found no match",
+                                seg_id
+                            )
+                        })?
+                    }
                 };
-                let mut zip_file = archive.by_index(zip_index).map_err(|e| e.to_string())?;
+
+                let archive = if let Some(a) = archive_cache.get_mut(&zip_file_idx) {
+                    a
+                } else {
+                    let z_path = export_paths.get(zip_file_idx).ok_or_else(|| "Zip index out of bounds".to_string())?;
+                    let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
+                    let archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                    archive_cache.insert(zip_file_idx, archive);
+                    archive_cache.get_mut(&zip_file_idx).unwrap()
+                };
+
+                let mut zip_file = archive.by_index(zip_entry_idx).map_err(|e| e.to_string())?;
                 let entry_name = zip_file.name().to_string();
                 if !id_appears_as_token(&entry_name, seg_id) {
                     return Err(format!(
@@ -179,8 +201,18 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                     .get(&ov_key_exact)
                     .or_else(|| ov_key_date_only.as_ref().and_then(|k| ov_idx.get(k)))
                     .or_else(|| ov_key_fallback.as_ref().and_then(|k| ov_idx.get(k)));
-                if let Some(&(ov_zip_index, ref ov_ext)) = ov_entry {
-                    if let Ok(mut ov_file) = archive.by_index(ov_zip_index) {
+                if let Some(&(ov_zip_file_idx, ov_zip_entry_idx, ref ov_ext)) = ov_entry {
+                    let archive = if let Some(a) = archive_cache.get_mut(&ov_zip_file_idx) {
+                        a
+                    } else {
+                        let z_path = export_paths.get(ov_zip_file_idx).ok_or_else(|| "Overlay zip index out of bounds".to_string())?;
+                        let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
+                        let archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                        archive_cache.insert(ov_zip_file_idx, archive);
+                        archive_cache.get_mut(&ov_zip_file_idx).unwrap()
+                    };
+
+                    if let Ok(mut ov_file) = archive.by_index(ov_zip_entry_idx) {
                         let ov_path = dest_dir.join(format!("{}-overlay.{}", id, ov_ext));
                         if let Ok(mut ov_out) = std::fs::File::create(&ov_path) {
                             let _ = std::io::copy(&mut ov_file, &mut ov_out);

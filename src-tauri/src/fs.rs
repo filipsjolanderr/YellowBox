@@ -1,5 +1,5 @@
 use crate::db::MemoryRepository;
-use tracing::{info, warn};
+use tracing::info;
 use crate::metadata;
 use crate::models::{MemoryItem, ProcessingState};
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ use zip::ZipArchive;
 
 /// Extracts the JSON metadata straight from the provided Snapchat `.zip` archive.
 /// Returns the parsed string content and the deduced destination `memories` folder.
-pub fn extract_json_from_zip(zip_path: &Path) -> Result<(String, PathBuf), String> {
+pub fn extract_json_from_zip(zip_path: &Path) -> Result<(Option<String>, PathBuf), String> {
     info!(path = %zip_path.display(), "extract_json_from_zip");
     let file = File::open(zip_path).map_err(|e| format!("Failed to open zip: {}", e))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("Invalid zip archive: {}", e))?;
@@ -29,15 +29,13 @@ pub fn extract_json_from_zip(zip_path: &Path) -> Result<(String, PathBuf), Strin
         }
     }
 
-    if !found {
-        return Err("Could not find json/memories_history.json inside the provided zip file. Are you sure you selected your Snapchat Data Export zip?".to_string());
-    }
+    let result_json = if found { Some(json_content) } else { None };
 
     let parent_dir = zip_path.parent().unwrap_or(Path::new(""));
     let zip_name_without_ext = zip_path.file_stem().unwrap_or_default().to_string_lossy();
     let memories_dir = parent_dir.join(format!("{}_extracted_memories", zip_name_without_ext));
 
-    Ok((json_content, memories_dir))
+    Ok((result_json, memories_dir))
 }
 
 /// Recursively scans the memories folder and auto-populates the database state if
@@ -149,50 +147,7 @@ pub async fn hydrate_state_from_folder(
     Ok(())
 }
 
-/// Extracts media files from the Snapchat export ZIP to a temp directory for preview.
-/// Returns the temp directory path. Files are saved as `{id}.{ext}` for easy lookup.
-/// Uses a ZIP index for O(1) lookup per item instead of O(archive_size × memory_ids) scan.
-/// Uses session-specific subdir so multiple tabs don't overwrite each other's previews.
-pub fn extract_preview_to_temp(
-    zip_path: &Path,
-    memory_ids: &[String],
-    app_temp_dir: &Path,
-    session_id: &str,
-) -> Result<PathBuf, String> {
-    let preview_dir = app_temp_dir.join("yellowbox_preview").join(session_id);
-    if preview_dir.exists() {
-        let _ = std::fs::remove_dir_all(&preview_dir);
-    }
-    std::fs::create_dir_all(&preview_dir).map_err(|e| e.to_string())?;
-
-    let index = crate::pipeline::build_main_media_zip_index(zip_path, memory_ids)?;
-    if index.is_empty() {
-        let sample_ids: Vec<&str> = memory_ids.iter().take(3).map(|s| s.as_str()).collect();
-        warn!(
-            zip_path = %zip_path.display(),
-            requested_ids = memory_ids.len(),
-            sample_ids = ?sample_ids,
-            "preview extraction: no files matched in ZIP (check that zip contains media and IDs match)"
-        );
-        return Ok(preview_dir);
-    }
-
-    let file = File::open(zip_path).map_err(|e| format!("Failed to open zip: {}", e))?;
-    let mut archive = ZipArchive::new(file).map_err(|e| format!("Invalid zip: {}", e))?;
-
-    for (key, (idx, ext)) in &index {
-        // Index uses composite keys "date|id" or "|id"; extract plain id for filename (pipe invalid on Windows)
-        let id = key.rsplit_once('|').map(|(_, id)| id).unwrap_or(key.as_str());
-        if let Ok(mut zip_file) = archive.by_index(*idx) {
-            let out_path = preview_dir.join(format!("{}.{}", id, ext));
-            if let Ok(mut outfile) = File::create(&out_path) {
-                let _ = std::io::copy(&mut zip_file, &mut outfile);
-            }
-        }
-    }
-
-    Ok(preview_dir)
-}
+// DELETED extract_preview_to_temp
 
 /// Scans each directory once and builds id -> path map for all requested memory IDs.
 /// Avoids N+1 WalkDir scans when resolving many paths.

@@ -16,7 +16,6 @@
     export let sessionId: string;
     export let memory: ParsedMemory;
     export let selectedOutput: string | null;
-    export let resolvedLocalPath: string | undefined = undefined;
     let localFallbackIndex = 0;
     let hasLoadedSuccessfully = false;
     const LOCAL_FALLBACKS_EXTRACTED: ((m: ParsedMemory) => string)[] = [
@@ -49,9 +48,7 @@
           ? getFinalSrc(memory)
           : selectedOutput && (isExtracted || isFailedWithFiles)
             ? getLocalMainSrc(memory)
-            : resolvedLocalPath
-              ? tauriService.getConvertedSrc(resolvedLocalPath)
-              : memory.downloadUrl || "";
+            : memory.downloadUrl || "";
 
     $: imageSrc = isZip
         ? ""
@@ -59,9 +56,7 @@
           ? getFinalSrc(memory)
           : selectedOutput && (isExtracted || isFailedWithFiles)
             ? getLocalMainSrc(memory)
-            : resolvedLocalPath
-              ? tauriService.getConvertedSrc(resolvedLocalPath)
-              : memory.downloadUrl || "";
+            : memory.downloadUrl || "";
 
     function lazyLoadVideo(node: HTMLVideoElement, src: string) {
         const observer = new IntersectionObserver(

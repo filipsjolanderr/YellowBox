@@ -7,8 +7,8 @@ export const tauriService = {
         await invoke("cleanup_database", { sessionId });
     },
 
-    async checkZipStructure(sessionId: string, path: string): Promise<string> {
-        return await invoke<string>("check_zip_structure", { sessionId, path });
+    async checkZipStructure(sessionId: string, path: string): Promise<string | null> {
+        return await invoke<string | null>("check_zip_structure", { sessionId, path });
     },
 
     async initializeAndLoad(sessionId: string, outputPath: string, items: ParsedMemory[]): Promise<ParsedMemory[]> {
@@ -19,17 +19,7 @@ export const tauriService = {
         });
     },
 
-    async clearPreviewTemp(sessionId: string): Promise<void> {
-        await invoke("clear_preview_temp", { sessionId });
-    },
-
-    async extractPreviewMedia(sessionId: string, zipPath: string, memoryIds: string[]): Promise<string> {
-        return await invoke<string>("extract_preview_media", {
-            sessionId,
-            zipPath,
-            memoryIds,
-        });
-    },
+// DELETED preview methods
 
     async resolveLocalMediaPaths(sessionId: string, memoryIds: string[]): Promise<Record<string, string>> {
         const result = await invoke<Record<string, string>>("resolve_local_media_paths", {
