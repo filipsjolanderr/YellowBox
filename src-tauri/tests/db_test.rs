@@ -116,3 +116,21 @@ async fn test_update_partial_fields() {
     assert_eq!(updated.extension, Some("jpg".to_string()));
     assert_eq!(updated.has_overlay, true);
 }
+
+#[tokio::test]
+async fn test_bulk_insert() {
+    let db = create_test_db().await;
+    let items = vec![
+        create_mock_item("bulk1"),
+        create_mock_item("bulk2"),
+        create_mock_item("bulk3"),
+    ];
+
+    db.bulk_insert_memories(items).await.unwrap();
+
+    let memories = db.get_all_memories().await.unwrap();
+    assert_eq!(memories.len(), 3);
+    assert!(memories.iter().any(|m| m.id == "bulk1"));
+    assert!(memories.iter().any(|m| m.id == "bulk2"));
+    assert!(memories.iter().any(|m| m.id == "bulk3"));
+}

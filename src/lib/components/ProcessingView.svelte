@@ -1,9 +1,7 @@
 <script lang="ts">
     import type { Session } from "$lib/session.svelte";
-    import { Progress } from "$lib/components/ui/progress";
     import { Badge } from "$lib/components/ui/badge";
     import { Button } from "$lib/components/ui/button";
-    import { Separator } from "$lib/components/ui/separator";
     import {
         Play,
         Pause,
@@ -24,7 +22,7 @@
         CircleCheck,
         Server,
         HardDrive,
-        LayoutGrid
+        LayoutGrid,
     } from "lucide-svelte";
     import { fade, slide } from "svelte/transition";
     import StatusTracker from "./StatusTracker.svelte";
@@ -39,6 +37,7 @@
         onAddZip,
         onDropZip,
         onRemoveZip,
+        onCancelAndReset,
     } = $props<{
         session: Session;
         onSelectOutput: () => void;
@@ -47,6 +46,7 @@
         onAddZip: () => void;
         onDropZip: (path: string) => void;
         onRemoveZip: (path: string) => void;
+        onCancelAndReset: () => void;
     }>();
 
     function getFileName(path: string): string {
@@ -121,11 +121,60 @@
         }));
     });
 
+    type ZipSequenceIssue = {
+        base: string;
+        missingParts: number[];
+    };
+
+    function analyzeMyDataZipSequence(paths: string[]): ZipSequenceIssue[] {
+        // Only considers ZIPs the user explicitly added (privacy).
+        // Pattern: mydata~<epoch>.zip or mydata~<epoch>-<part>.zip
+        const re = /(?:^|[\\/])mydata~(\d+)(?:-(\d+))?\.zip$/i;
+        const byBase = new Map<string, Set<number>>();
+
+        for (const p of paths) {
+            const m = p.match(re);
+            if (!m) continue;
+            const base = m[1];
+            const part = m[2] ? Number(m[2]) : 1;
+            if (!Number.isFinite(part) || part <= 0) continue;
+            if (!byBase.has(base)) byBase.set(base, new Set());
+            byBase.get(base)!.add(part);
+        }
+
+        const issues: ZipSequenceIssue[] = [];
+        for (const [base, partsSet] of byBase.entries()) {
+            const parts = Array.from(partsSet).sort((a, b) => a - b);
+            if (parts.length <= 1) continue;
+            const min = parts[0];
+            const max = parts[parts.length - 1];
+            const missing: number[] = [];
+            for (let i = min; i <= max; i++) {
+                if (!partsSet.has(i)) missing.push(i);
+            }
+            if (missing.length > 0) {
+                issues.push({ base, missingParts: missing });
+            }
+        }
+
+        return issues;
+    }
+
+    let zipSequenceIssues = $derived(analyzeMyDataZipSequence(session.selectedZips));
+    let hasZipSequenceGaps = $derived(zipSequenceIssues.length > 0);
+
     let isReadyForBackup = $derived(
         session.memories.length > 0 && 
         !session.isParsing && 
         !session.isInitializingDb
     );
+
+    let allZipsValid = $derived(
+        session.selectedZips.length > 0 &&
+            session.selectedZips.every((z: string) => session.zipValidity[z] === "valid"),
+    );
+
+    let canStartBackup = $derived(isReadyForBackup && allZipsValid && !hasZipSequenceGaps);
 
     // Stats items - Consolidated to avoid duplication
     let statItems = $derived([
@@ -174,6 +223,7 @@
     ]);
 
     let parsingProgressVal = $derived(session.parsingProgress);
+
 </script>
 
 <div class="flex flex-col h-full w-full bg-background overflow-hidden">
@@ -183,8 +233,10 @@
         {#if viewState() === 'setup'}
             <div class="h-full w-full flex flex-col overflow-y-auto p-12 gap-10" in:fade>
                 <div class="max-w-4xl w-full mx-auto ml-0">
-                        <h2 class="text-2xl font-bold tracking-tight">Prepare your backup</h2>
-                        <p class="text-muted-foreground mt-2">Connect your source archives and choose where to save the results.</p>
+                        <h2 class="text-2xl font-bold tracking-tight leading-tight">Prepare your backup</h2>
+                        <p class="text-muted-foreground mt-2 leading-relaxed max-w-2xl">
+                            Connect your source archives and choose where to save the results.
+                        </p>
                     </div>
 
                     <div class="flex flex-col gap-8">
@@ -198,12 +250,12 @@
                             {#if !session.selectedOutput}
                                 <button
                                     onclick={onSelectOutput}
-                                    class="group flex items-center justify-between gap-4 px-6 py-8 bg-card border border-dashed rounded-2xl hover:border-primary/50 hover:bg-primary/5 transition-all duration-300 text-left"
+                                    class="group flex items-center justify-between gap-4 px-6 py-8 bg-card border border-dashed border-border/70 rounded-2xl hover:border-primary/60 hover:bg-primary/5 active:bg-primary/7 transition-all duration-300 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                                     in:fade
                                 >
                                     <div class="flex items-center gap-4">
-                                        <div class="h-12 w-12 rounded-full bg-muted flex items-center justify-center group-hover:bg-primary/10 transition-colors">
-                                            <FolderOpen class="h-6 w-6 text-muted-foreground group-hover:text-primary" />
+                                        <div class="h-12 w-12 rounded-2xl bg-muted/70 flex items-center justify-center group-hover:bg-primary/10 transition-colors ring-1 ring-border/50">
+                                            <FolderOpen class="h-6 w-6 text-muted-foreground group-hover:text-primary transition-colors" />
                                         </div>
                                         <div>
                                             <p class="text-base font-semibold text-foreground">Select destination folder</p>
@@ -213,7 +265,7 @@
                                     <Plus class="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors shrink-0" />
                                 </button>
                             {:else}
-                                <div class="flex items-center justify-between gap-4 px-6 py-5 bg-card rounded-2xl border border-border/60 shadow-sm" in:slide>
+                                <div class="flex items-center justify-between gap-4 px-6 py-5 bg-card rounded-2xl border border-border/60 shadow-sm ring-1 ring-primary/5" in:slide>
                                     <div class="flex items-center gap-4 min-w-0">
                                         <div class="h-12 w-12 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
                                             <FolderOpen class="h-6 w-6" />
@@ -243,6 +295,27 @@
 
                             <div class="flex flex-col border rounded-2xl overflow-hidden bg-muted/5">
                                 <div class="p-6 flex flex-col gap-4">
+                                {#if hasZipSequenceGaps}
+                                    <div class="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm" in:fade>
+                                        <div class="flex items-start gap-3">
+                                            <AlertCircle class="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                                            <div class="min-w-0">
+                                                <p class="font-bold text-destructive">Missing ZIP part(s)</p>
+                                                <p class="text-muted-foreground mt-1 leading-relaxed">
+                                                    Your Snapchat export appears split into multiple parts, but some part numbers are missing.
+                                                    Add the missing ZIP(s) before starting to avoid pipeline failures.
+                                                </p>
+                                                <ul class="mt-2 space-y-1 text-xs font-mono text-muted-foreground">
+                                                    {#each zipSequenceIssues as issue (issue.base)}
+                                                        <li>
+                                                            mydata~{issue.base}: missing {issue.missingParts.join(", ")}
+                                                        </li>
+                                                    {/each}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                {/if}
                                 {#if session.selectedZips.length === 0}
                                     <button
                                         onclick={onAddZip}
@@ -259,11 +332,23 @@
                                     <div class="grid grid-cols-1 gap-2.5">
                                         {#each zipStats() as zip (zip.path)}
                                             <div class="group relative flex items-center gap-3 p-3 bg-card border rounded-xl shadow-sm hover:shadow-md transition-all" in:slide>
-                                                <div class="h-8 w-8 rounded-lg bg-orange-500/10 text-orange-600 flex items-center justify-center shrink-0">
+                                                <div class="h-8 w-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0 ring-1 ring-primary/10">
                                                     <FileArchive class="h-4 w-4" />
                                                 </div>
                                                 <div class="flex flex-col min-w-0 pr-8">
                                                     <span class="text-xs font-bold truncate">{zip.name}</span>
+                                                    <div class="flex items-center gap-1 mt-0.5 text-[9px] font-bold" in:fade>
+                                                        {#if session.zipValidity[zip.path] === "checking"}
+                                                            <RefreshCw class="h-2.5 w-2.5 animate-spin text-primary" />
+                                                            <span class="text-primary/90">Indexing</span>
+                                                        {:else if session.zipValidity[zip.path] === "valid"}
+                                                            <CircleCheck class="h-2.5 w-2.5 text-green-500" />
+                                                            <span class="text-green-500">Ready</span>
+                                                        {:else if session.zipValidity[zip.path] === "invalid"}
+                                                            <AlertCircle class="h-2.5 w-2.5 text-destructive" />
+                                                            <span class="text-destructive">Invalid ZIP</span>
+                                                        {/if}
+                                                    </div>
                                                 </div>
                                                 <Button
                                                     variant="ghost" 
@@ -281,28 +366,6 @@
                                         Add More
                                     </Button>
                                 {/if}
-
-                                {#if session.isParsing || session.isInitializingDb}
-                                    <div class="mt-4 p-5 bg-primary/5 rounded-2xl border border-primary/20 flex flex-col gap-4 shadow-sm" in:fade>
-                                        <div class="flex items-center justify-between">
-                                            <div class="flex items-center gap-3 font-bold text-xs text-primary">
-                                                <RefreshCw class="h-3.5 w-3.5 animate-spin" />
-                                                <span class="uppercase tracking-widest">
-                                                    {session.isParsing ? "Indexing Memories" : "Preparing Database"}
-                                                </span>
-                                            </div>
-                                            <span class="text-[10px] font-mono font-bold text-primary/70">
-                                                {Math.round($parsingProgressVal)}%
-                                            </span>
-                                        </div>
-                                        <Progress value={$parsingProgressVal} class="h-2 rounded-full bg-primary/10" />
-                                        <p class="text-[10px] text-muted-foreground leading-snug font-medium">
-                                            {session.isParsing 
-                                                ? "Analyzing file structure and building memory index. This may take a moment..." 
-                                                : "Finalizing local database for high-speed processing..."}
-                                        </p>
-                                    </div>
-                                {/if}
                                 </div>
                             </div>
                         </section>
@@ -314,10 +377,13 @@
                 <Button
                     onclick={onStartBackup}
                     size="lg"
-                    disabled={!isReadyForBackup}
-                    class="gap-3 font-bold shadow-2xl shadow-primary/30 h-16 px-8 text-lg rounded-2xl"
+                    disabled={!canStartBackup}
+                    class="gap-3 font-bold shadow-2xl shadow-primary/25 h-16 px-8 text-lg rounded-2xl ring-1 ring-primary/10 disabled:shadow-none disabled:ring-0"
                 >
-                    {#if session.isParsing || session.isInitializingDb}
+                    {#if session.isInitializingDb}
+                        <RefreshCw class="h-5 w-5 animate-spin" />
+                        Indexing...
+                    {:else if session.isParsing}
                         <RefreshCw class="h-5 w-5 animate-spin" />
                         Indexing...
                     {:else}
@@ -338,56 +404,49 @@
                     </div>
                     <div class="mt-8 flex flex-col items-center gap-2">
                         <h2 class="text-3xl font-black tracking-tight">{session.progressPercentage.toFixed(1)}%</h2>
-                        <p class="text-muted-foreground font-medium">Processing your memories...</p>
+                        <div class="flex items-center gap-2 text-muted-foreground font-medium">
+                            {#if !session.isPaused}
+                                <RefreshCw class="h-3.5 w-3.5 animate-spin text-primary" />
+                            {/if}
+                            <p>
+                                {session.statusMessage || "Processing your memories..."}
+                            </p>
+                        </div>
                     </div>
                 </div>
 
                 <div class="w-full max-w-md flex flex-col gap-6">
-                    <div class="p-6 bg-card rounded-2xl border shadow-xl flex flex-col gap-4 ring-1 ring-primary/10">
-                        <div class="flex items-center justify-between">
-                            <span class="text-sm font-bold opacity-70 uppercase tracking-widest">Progress</span>
-                            <span class="text-sm font-black font-mono">
-                                {session.completedCount + session.failedCount} <span class="opacity-40">/ {session.totalCount}</span>
-                            </span>
+                    <div class="flex flex-col items-center justify-center gap-3">
+                        <div class="flex items-center justify-center gap-2">
+                            <Button
+                                onclick={onTogglePause}
+                                variant="ghost"
+                                size="sm"
+                                class="gap-2 text-[10px] font-bold uppercase tracking-wider h-8 hover:bg-primary/5"
+                            >
+                                {#if session.isPaused}
+                                    <Play class="h-3 w-3 fill-current" />
+                                    Resume
+                                {:else}
+                                    <Pause class="h-3 w-3 fill-current" />
+                                    Pause
+                                {/if}
+                            </Button>
+
+                            <Button
+                                onclick={onCancelAndReset}
+                                variant="ghost"
+                                size="sm"
+                                class="gap-2 text-[10px] font-bold uppercase tracking-wider h-8 hover:bg-destructive/10 hover:text-destructive"
+                            >
+                                <X class="h-3 w-3" />
+                                Cancel
+                            </Button>
                         </div>
-                        <Progress value={session.progressPercentage} class="h-3 rounded-full" />
-                        <div class="flex items-center justify-center gap-6 pt-2">
-                            <div class="flex items-center gap-2 text-[11px]">
-                                <div class="h-2 w-2 rounded-full bg-green-500"></div>
-                                <span class="font-bold">{session.completedCount.toLocaleString()}</span>
-                                <span class="text-muted-foreground leading-none">Completed</span>
-                            </div>
-                            {#if session.failedCount > 0}
-                                <div class="flex items-center gap-2 text-[11px]">
-                                    <div class="h-2 w-2 rounded-full bg-destructive"></div>
-                                    <span class="font-bold">{session.failedCount.toLocaleString()}</span>
-                                    <span class="text-muted-foreground leading-none">Errors</span>
-                                </div>
-                            {/if}
-                        </div>
-                    </div>
-                    
-                    <div class="flex items-center justify-center gap-3">
+
                         <p class="text-center text-[10px] text-muted-foreground font-medium animate-pulse">
                             Please keep the application open during this process
                         </p>
-                        
-                        <Separator orientation="vertical" class="h-4" />
-
-                        <Button
-                            onclick={onTogglePause}
-                            variant="ghost"
-                            size="sm"
-                            class="gap-2 text-[10px] font-bold uppercase tracking-wider h-8 hover:bg-primary/5"
-                        >
-                            {#if session.isPaused}
-                                <Play class="h-3 w-3 fill-current" />
-                                Resume
-                            {:else}
-                                <Pause class="h-3 w-3 fill-current" />
-                                Pause
-                            {/if}
-                        </Button>
                     </div>
                 </div>
             </div>
@@ -402,7 +461,11 @@
                         <h2 class="text-4xl font-black tracking-tight">Process Completed</h2>
                         <p class="text-muted-foreground mt-3 text-lg">Your Snapchat backup has been successfully reconstructed and saved.</p>
                     </div>
-                    <Button size="lg" onclick={handleOpenOutputFolder} class="bg-green-600 hover:bg-green-700 text-white gap-3 px-8 h-14 text-base font-bold rounded-2xl shadow-xl shadow-green-600/20">
+                    <Button
+                        size="lg"
+                        onclick={handleOpenOutputFolder}
+                        class="gap-3 px-8 h-14 text-base font-bold rounded-2xl shadow-xl shadow-primary/20"
+                    >
                         <FolderOpen class="h-5 w-5" />
                         Explore Memories
                     </Button>
@@ -413,7 +476,11 @@
                         <h3 class="text-xl font-bold">What's Next?</h3>
                         <p class="text-sm text-muted-foreground leading-relaxed">You can now safely delete the original ZIPs if you wish. All your memories are safely organized in the destination folder.</p>
                         <div class="flex gap-4 mt-2">
-                            <Button variant="outline" class="h-10 rounded-xl font-bold px-6" onclick={() => location.reload()}>
+                            <Button
+                                variant="outline"
+                                class="h-10 rounded-xl font-bold px-6"
+                                onclick={onCancelAndReset}
+                            >
                                 Start New Backup
                             </Button>
                         </div>

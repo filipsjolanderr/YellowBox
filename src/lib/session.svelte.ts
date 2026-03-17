@@ -12,9 +12,13 @@ export class Session {
     memories: ParsedMemory[] = $state([]);
     isProcessing = $state(false);
     isPaused = $state(false);
-    isParsing = $state(false);
+    activeParsingTasks = $state(0);
+    isParsing = $derived(this.activeParsingTasks > 0);
     isInitializingDb = $state(false);
+    zipProgress: Record<string, number> = $state({});
+    zipValidity: Record<string, "checking" | "valid" | "invalid"> = $state({});
     parsingProgress = tweened(0, { duration: 400, easing: cubicOut });
+    statusMessage = $state("");
     hasAttemptedLoad = $state(false);
 
     pendingCount = $derived(

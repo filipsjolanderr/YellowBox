@@ -45,12 +45,15 @@ pub async fn hydrate_state_from_folder(
     db: &impl MemoryRepository,
     items: &[MemoryItem],
 ) -> Result<(), String> {
+    // 1. Bulk insert items first so they exist in DB before we update them
+    let _ = db.bulk_insert_memories(items.to_vec()).await;
+
     if !memories_dir.exists() {
         return Ok(());
     }
 
-    // Scan only root-level files (exclude .thumbs and subdirs) to avoid matching thumbnails as media
-    let mut existing_files: Vec<String> = Vec::new();
+    // 2. Scan root-level files and build a lookup map for O(1) checks
+    let mut files_by_name: HashMap<String, PathBuf> = HashMap::new();
     for entry in WalkDir::new(memories_dir)
         .max_depth(1)
         .into_iter()
@@ -58,14 +61,12 @@ pub async fn hydrate_state_from_folder(
     {
         if entry.file_type().is_file() {
             if let Some(name) = entry.file_name().to_str() {
-                existing_files.push(name.to_lowercase());
+                files_by_name.insert(name.to_lowercase(), entry.path().to_path_buf());
             }
         }
     }
 
     for item in items {
-        let _ = db.insert_or_ignore_memory(item).await;
-
         let id_lower = item.id.to_lowercase();
 
         let id_marker = format!("_{}.", id_lower);
@@ -83,26 +84,30 @@ pub async fn hydrate_state_from_folder(
                 Some("jpg".to_string())
             }
         });
+        
         let expected_combined = ext.as_ref().map(|e| format!("{}_{}.{}", clean_date, item.id, e).to_lowercase());
+        
         let found_date_prefixed = expected_combined.as_ref().and_then(|expected| {
-            existing_files.iter().find(|f| f == &expected).map(|_| expected.as_str())
+            files_by_name.get(expected).map(|_| expected.as_str())
         });
 
         let found_file = found_date_prefixed.map(|s| s.to_string()).or_else(|| {
-            existing_files.iter().find(|f| {
+            // Fallback: search for files containing the ID marker. 
+            // This is still slightly slower but we only do it if the direct date-match fails.
+            files_by_name.keys().find(|f| {
                 (f.contains(&id_marker) || f.starts_with(&id_marker_alt))
                     && !f.contains("-main")
                     && !f.contains("-overlay")
                     && !f.ends_with(".zip")
-            }).map(|s| s.clone())
+            }).cloned()
         });
 
-        let main_file = existing_files.iter().find(|f| f.contains(&main_marker));
+        let main_file = files_by_name.keys().find(|f| f.contains(&main_marker));
 
         let overlay_marker = format!("{}-overlay", id_lower);
-        let overlay_exists = existing_files.iter().any(|f| f.contains(&overlay_marker));
+        let overlay_exists = files_by_name.keys().any(|f| f.contains(&overlay_marker));
 
-        let zip_exists = existing_files.iter().any(|f| f.contains(&zip_marker));
+        let zip_exists = files_by_name.keys().any(|f| f.contains(&zip_marker));
 
         if let Some(ref f) = found_file {
             let ext = Path::new(f)

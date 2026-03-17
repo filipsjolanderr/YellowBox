@@ -11,6 +11,10 @@ export const tauriService = {
         return await invoke<string | null>("check_zip_structure", { sessionId, path });
     },
 
+    async setExportPaths(sessionId: string, paths: string[]): Promise<void> {
+        await invoke("set_export_paths", { sessionId, paths });
+    },
+
     async initializeAndLoad(sessionId: string, outputPath: string, items: ParsedMemory[]): Promise<ParsedMemory[]> {
         return await invoke<ParsedMemory[]>("initialize_and_load", {
             sessionId,
@@ -18,8 +22,6 @@ export const tauriService = {
             items,
         });
     },
-
-// DELETED preview methods
 
     async resolveLocalMediaPaths(sessionId: string, memoryIds: string[]): Promise<Record<string, string>> {
         const result = await invoke<Record<string, string>>("resolve_local_media_paths", {
@@ -60,6 +62,18 @@ export const tauriService = {
 
     async listenForMemoryUpdates(sessionId: string, callback: (memory: ParsedMemory) => void): Promise<UnlistenFn> {
         return await listen<ParsedMemory>(`memory-updated-${sessionId}`, (event) => {
+            callback(event.payload);
+        });
+    },
+
+    async listenForPipelineStatus(sessionId: string, callback: (status: string) => void): Promise<UnlistenFn> {
+        return await listen<string>(`pipeline-status-${sessionId}`, (event) => {
+            callback(event.payload);
+        });
+    },
+
+    async listenForZipIndexingProgress(sessionId: string, callback: (payload: { path: string, progress: number }) => void): Promise<UnlistenFn> {
+        return await listen<{ path: string, progress: number }>(`zip-indexing-progress-${sessionId}`, (event) => {
             callback(event.payload);
         });
     },

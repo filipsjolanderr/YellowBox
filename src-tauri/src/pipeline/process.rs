@@ -9,7 +9,6 @@ use crate::pipeline::extract::do_extract_step;
 use crate::pipeline::metadata_stage::do_metadata_step;
 use crate::pipeline::types::{PipelineContext, PipelineMessage};
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
 use tracing::info;
 
 /// Processes one item through all pipeline stages. Used by parallel workers.
@@ -23,44 +22,44 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
     let item_id = msg.item.id.clone();
     let mut item_for_fail = msg.item.clone();
 
+    let item_start = std::time::Instant::now();
     info!(id = %item_id, "pipeline: processing item");
 
     for attempt in 1..=MAX_ATTEMPTS {
         item_for_fail = msg.item.clone();
         if ctx.is_cancelled.load(Ordering::SeqCst) {
             let _ = ctx
-                .db
-                .update_state(&item_id, ProcessingState::Paused, None, None, None, None)
+                .updates
+                .update_state_and_emit(
+                    msg.item,
+                    ProcessingState::Paused,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .await;
-            let _ = ctx
-                .app
-                .emit(&format!("memory-updated-{}", ctx.session_id), msg.item);
             return Ok(());
         }
 
         let result = async {
-            info!(id = %msg.item.id, "pipeline: acquire step");
+            let stage_start = std::time::Instant::now();
+            info!(id = %msg.item.id, attempt, "pipeline: acquire step");
             do_acquire_step(&ctx, &mut msg).await?;
+            info!(id = %msg.item.id, attempt, elapsed_ms = stage_start.elapsed().as_millis(), "pipeline: acquire step done");
             if msg.item.state == ProcessingState::Pending {
                 msg.item.state = ProcessingState::Acquired;
+                // Persist + notify so UI stays live during long runs/resume.
                 let _ = ctx
-                    .db
-                    .update_state(
-                        &msg.item.id,
-                        ProcessingState::Acquired,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
+                    .updates
+                    .update_state_and_emit(msg.item.clone(), ProcessingState::Acquired, None, None, None, None)
                     .await;
-                let _ = ctx
-                    .app
-                    .emit(&format!("memory-updated-{}", ctx.session_id), msg.item.clone());
             }
 
-            info!(id = %msg.item.id, "pipeline: extract step");
+            let stage_start = std::time::Instant::now();
+            info!(id = %msg.item.id, attempt, "pipeline: extract step");
             do_extract_step(&ctx, &mut msg).await?;
+            info!(id = %msg.item.id, attempt, elapsed_ms = stage_start.elapsed().as_millis(), "pipeline: extract step done");
             if msg.item.state == ProcessingState::Acquired {
                 let path_ext = msg.extracted_files.as_ref().and_then(|(p, _)| {
                     p.extension().and_then(|s| s.to_str()).map(|s| s.to_string())
@@ -80,9 +79,9 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
                 });
                 msg.item.has_overlay = has_overlay;
                 let _ = ctx
-                    .db
-                    .update_state(
-                        &msg.item.id,
+                    .updates
+                    .update_state_and_emit(
+                        msg.item.clone(),
                         ProcessingState::Unpacked,
                         None,
                         msg.item.extension.clone(),
@@ -90,49 +89,44 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
                         None,
                     )
                     .await;
-                let _ = ctx
-                    .app
-                    .emit(&format!("memory-updated-{}", ctx.session_id), msg.item.clone());
             }
 
-            info!(id = %msg.item.id, "pipeline: combine step");
+            let stage_start = std::time::Instant::now();
+            info!(id = %msg.item.id, attempt, "pipeline: combine step");
             do_combine_step(&ctx, &mut msg).await?;
+            info!(id = %msg.item.id, attempt, elapsed_ms = stage_start.elapsed().as_millis(), "pipeline: combine step done");
             if msg.item.state == ProcessingState::Unpacked {
                 msg.item.state = ProcessingState::Composited;
                 let _ = ctx
-                    .db
-                    .update_state(
-                        &msg.item.id,
+                    .updates
+                    .update_state_and_emit(
+                        msg.item.clone(),
                         ProcessingState::Composited,
                         None,
                         msg.item.extension.clone(),
-                        None,
+                        Some(msg.item.has_overlay),
                         None,
                     )
                     .await;
-                let _ = ctx
-                    .app
-                    .emit(&format!("memory-updated-{}", ctx.session_id), msg.item.clone());
             }
 
-            info!(id = %msg.item.id, "pipeline: metadata step");
+            let stage_start = std::time::Instant::now();
+            info!(id = %msg.item.id, attempt, "pipeline: metadata step");
             do_metadata_step(&ctx, &msg).await?;
+            info!(id = %msg.item.id, attempt, elapsed_ms = stage_start.elapsed().as_millis(), "pipeline: metadata step done");
             if msg.item.state == ProcessingState::Composited {
                 msg.item.state = ProcessingState::Completed;
                 let _ = ctx
-                    .db
-                    .update_state(
-                        &msg.item.id,
+                    .updates
+                    .update_state_and_emit(
+                        msg.item.clone(),
                         ProcessingState::Completed,
                         None,
                         msg.item.extension.clone(),
-                        None,
+                        Some(msg.item.has_overlay),
                         None,
                     )
                     .await;
-                let _ = ctx
-                    .app
-                    .emit(&format!("memory-updated-{}", ctx.session_id), msg.item.clone());
             }
             Ok::<(), crate::error::AppError>(())
         }
@@ -140,7 +134,7 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
 
         match result {
             Ok(()) => {
-                info!(id = %item_id, "pipeline: item completed");
+                info!(id = %item_id, elapsed_ms = item_start.elapsed().as_millis(), "pipeline: item completed");
                 return Ok(());
             }
             Err(e) => {
@@ -161,19 +155,16 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
         failed_item.state = ProcessingState::Failed;
         failed_item.error_message = Some(err_msg.clone());
         let _ = ctx
-            .db
-            .update_state(
-                &item_id,
+            .updates
+            .update_state_and_emit(
+                failed_item,
                 ProcessingState::Failed,
-                Some(&err_msg),
+                Some(err_msg.clone()),
                 None,
                 None,
                 None,
             )
             .await;
-        let _ = ctx
-            .app
-            .emit(&format!("memory-updated-{}", ctx.session_id), failed_item);
         Err(crate::error::AppError::Message(err_msg))
     } else {
         Ok(())

@@ -1,7 +1,7 @@
 export class AppConfig {
     overwriteExisting = $state(false);
     maxConcurrency = $state<number | null>(null);
-    lastZip = $state<string | null>(null);
+    lastZips = $state<string[]>([]);
     lastOutput = $state<string | null>(null);
 
     constructor() {
@@ -12,7 +12,7 @@ export class AppConfig {
                     const parsed = JSON.parse(stored);
                     this.overwriteExisting = parsed.overwriteExisting ?? false;
                     this.maxConcurrency = parsed.maxConcurrency ?? null;
-                    this.lastZip = parsed.lastZip ?? null;
+                    this.lastZips = parsed.lastZips ?? (parsed.lastZip ? [parsed.lastZip] : []);
                     this.lastOutput = parsed.lastOutput ?? null;
                 } catch (e) { }
             }
@@ -24,7 +24,7 @@ export class AppConfig {
             localStorage.setItem("yellowbox-config", JSON.stringify({
                 overwriteExisting: this.overwriteExisting,
                 maxConcurrency: this.maxConcurrency,
-                lastZip: this.lastZip,
+                lastZips: this.lastZips,
                 lastOutput: this.lastOutput
             }));
         }

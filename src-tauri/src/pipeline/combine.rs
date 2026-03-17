@@ -22,6 +22,11 @@ pub(crate) async fn do_combine_step<R: MemoryRepository>(
         if let Some(overlay) = overlay_path {
             if is_video_ext(&ext) {
                 info!(id = %msg.item.id, "combine: overlaying video");
+                let _permit = ctx
+                    .ffmpeg_sem
+                    .acquire()
+                    .await
+                    .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
                 if let Err(e) =
                     combiner::combine_video(&ctx.app, main_path, overlay, &combined_dest).await
                 {
@@ -35,6 +40,11 @@ pub(crate) async fn do_combine_step<R: MemoryRepository>(
                 {
                     // Main may be a video with wrong extension (e.g. .jpg); try video overlay
                     let video_dest = combined_dest.with_extension("mp4");
+                    let _permit = ctx
+                        .ffmpeg_sem
+                        .acquire()
+                        .await
+                        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
                     if let Err(ve) =
                         combiner::combine_video(&ctx.app, main_path, overlay, &video_dest).await
                     {

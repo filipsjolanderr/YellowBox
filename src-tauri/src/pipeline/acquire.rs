@@ -2,18 +2,25 @@
 //! For split videos (multiple segments), extracts and concatenates with ffmpeg.
 //! Uses direct lookup by date|segment_id - no canonical substitution.
 
-use std::collections::HashMap;
-
 use crate::db::MemoryRepository;
+use crate::downloader;
 use crate::error::Result;
 use crate::metadata;
 use crate::models::{ProcessingState};
 use crate::pipeline::types::{PipelineContext, PipelineMessage};
-use crate::pipeline::zip::{find_raw_file_fast, extract_id_from_filename, id_appears_as_token, scan_main_by_date_and_id};
-use crate::downloader;
+use crate::pipeline::zip::{
+    extract_id_from_filename,
+    find_raw_file_fast,
+    id_appears_as_token,
+    scan_main_by_best_date_match,
+    scan_main_by_date_and_id,
+};
 use std::path::{Path, PathBuf};
 use tauri_plugin_shell::ShellExt;
 use tracing::info;
+use tauri::Emitter;
+use std::fs::File;
+use zip::ZipArchive;
 
 pub(crate) async fn do_acquire_step<R: MemoryRepository>(
     ctx: &PipelineContext<R>,
@@ -38,6 +45,11 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
             }
         }
         if !ctx.export_paths.is_empty() {
+            let _permit = ctx
+                .io_sem
+                .acquire()
+                .await
+                .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
             match try_extract_from_source_zip(ctx, &msg.item).await {
                 Ok(found_path) => {
                     info!(id = %msg.item.id, path = %found_path.display(), "acquire: extracted from source ZIP");
@@ -50,6 +62,12 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
             }
         }
         info!(id = %msg.item.id, "acquire: downloading from CDN");
+        let _ = ctx.app.emit(&format!("pipeline-status-{}", ctx.session_id), format!("Downloading {} from CDN...", msg.item.id));
+        let _permit = ctx
+            .download_sem
+            .acquire()
+            .await
+            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
         let path = downloader::download_memory(&ctx.http_client, &msg.item, &ctx.dest_dir).await
             .map_err(|e| crate::error::AppError::Message(e))?;
         info!(id = %msg.item.id, path = %path.display(), "acquire: download complete");
@@ -88,6 +106,7 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
     ctx: &PipelineContext<R>,
     item: &crate::models::MemoryItem,
 ) -> Result<PathBuf> {
+    let overall_start = std::time::Instant::now();
     let segment_ids: Vec<String> = item
         .segment_ids
         .as_ref()
@@ -95,22 +114,24 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
         .cloned()
         .unwrap_or_else(|| vec![item.id.clone()]);
     let clean_date = metadata::get_clean_date_prefix(&item.original_date);
+    let target_epoch = metadata::parse_date_flexible(&item.original_date).map(|dt| dt.timestamp());
     let overlay_clean_date = clean_date.clone();
 
     let dest_dir = ctx.dest_dir.clone();
     let dest_dir_clone = dest_dir.clone();
     let main_index = ctx.export_zip_index.clone();
     let overlay_index = ctx.export_overlay_index.clone();
+    let zip_access = ctx.zip_access.clone();
     let id = item.id.clone();
     let id_for_final = id.clone();
 
     let export_paths = ctx.export_paths.clone();
     let segment_paths = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<PathBuf>, String> {
-        let mut archive_cache: HashMap<usize, zip::ZipArchive<std::fs::File>> = HashMap::new();
         let mut paths = Vec::new();
         let mut id_from_main_filename: Option<String> = None;
 
         if let Some(ref idx) = main_index {
+            info!(dest_dir = %dest_dir.display(), segment_count = segment_ids.len(), "acquire: starting extraction from ZIP pool");
             for (i, seg_id) in segment_ids.iter().enumerate() {
                 let key_exact = format!("{}|{}", clean_date, seg_id);
                 let key_date_only = if clean_date.len() >= 10 {
@@ -135,7 +156,7 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                         for (z_idx, z_path) in export_paths.iter().enumerate() {
                             let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
                             let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-                            if let Some((e_idx, ext)) = scan_main_by_date_and_id(
+                                if let Some((e_idx, ext)) = scan_main_by_date_and_id(
                                 &mut archive,
                                 &clean_date,
                                 if clean_date.len() >= 10 {
@@ -149,6 +170,19 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                                 break;
                             }
                         }
+                            if found.is_none() {
+                                // Last resort: date mismatch between JSON and ZIP filename; pick closest date match by ID.
+                                for (z_idx, z_path) in export_paths.iter().enumerate() {
+                                    let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
+                                    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                                    if let Some((e_idx, ext)) =
+                                        scan_main_by_best_date_match(&mut archive, target_epoch, seg_id)
+                                    {
+                                        found = Some((z_idx, e_idx, ext));
+                                        break;
+                                    }
+                                }
+                            }
                         found.ok_or_else(|| {
                             format!(
                                 "Segment {} not in ZIP index and scan found no match",
@@ -158,31 +192,35 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                     }
                 };
 
-                let archive = if let Some(a) = archive_cache.get_mut(&zip_file_idx) {
-                    a
-                } else {
-                    let z_path = export_paths.get(zip_file_idx).ok_or_else(|| "Zip index out of bounds".to_string())?;
-                    let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
-                    let archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-                    archive_cache.insert(zip_file_idx, archive);
-                    archive_cache.get_mut(&zip_file_idx).unwrap()
-                };
+                let z_path = export_paths.get(zip_file_idx).ok_or_else(|| "Zip index out of bounds".to_string())?;
+                
+                // Use shared, blocking ZIP cache (no async locks in blocking context).
+                let z_path_owned = z_path.clone();
+                let archive_mutex = zip_access
+                    .get_or_open(&z_path_owned)
+                    .map_err(|e| e.to_string())?;
 
-                let mut zip_file = archive.by_index(zip_entry_idx).map_err(|e| e.to_string())?;
-                let entry_name = zip_file.name().to_string();
-                if !id_appears_as_token(&entry_name, seg_id) {
-                    return Err(format!(
-                        "ZIP entry {} does not contain segment id {} - wrong file would overwrite",
-                        entry_name, seg_id
-                    ));
+                {
+                    let mut archive_guard = archive_mutex.lock().map_err(|e| e.to_string())?;
+                    let entry_name = {
+                        let zip_file = archive_guard.by_index(zip_entry_idx).map_err(|e| e.to_string())?;
+                        zip_file.name().to_string()
+                    };
+                    
+                    if !id_appears_as_token(&entry_name, seg_id) {
+                        return Err(format!(
+                            "ZIP entry {} does not contain segment id {} - wrong file would overwrite",
+                            entry_name, seg_id
+                        ));
+                    }
+                    if i == 0 {
+                        id_from_main_filename = extract_id_from_filename(&entry_name).map(|s| s.to_string());
+                    }
+                    let out_path = dest_dir.join(format!("{}-seg{}.{}", id, i, ext));
+                    info!(out_path = %out_path.display(), "acquire: extracting segment");
+                    extract_zip_entry_to_file(&mut archive_guard, zip_entry_idx, &out_path)?;
+                    paths.push(out_path);
                 }
-                if i == 0 {
-                    id_from_main_filename = extract_id_from_filename(&entry_name);
-                }
-                let out_path = dest_dir.join(format!("{}-seg{}.{}", id, i, ext));
-                let mut outfile = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
-                std::io::copy(&mut zip_file, &mut outfile).map_err(|e| e.to_string())?;
-                paths.push(out_path);
             }
             if let Some(ref ov_idx) = overlay_index {
                 let overlay_lookup_id = id_from_main_filename.as_deref().unwrap_or(&id);
@@ -202,21 +240,17 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                     .or_else(|| ov_key_date_only.as_ref().and_then(|k| ov_idx.get(k)))
                     .or_else(|| ov_key_fallback.as_ref().and_then(|k| ov_idx.get(k)));
                 if let Some(&(ov_zip_file_idx, ov_zip_entry_idx, ref ov_ext)) = ov_entry {
-                    let archive = if let Some(a) = archive_cache.get_mut(&ov_zip_file_idx) {
-                        a
-                    } else {
-                        let z_path = export_paths.get(ov_zip_file_idx).ok_or_else(|| "Overlay zip index out of bounds".to_string())?;
-                        let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
-                        let archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-                        archive_cache.insert(ov_zip_file_idx, archive);
-                        archive_cache.get_mut(&ov_zip_file_idx).unwrap()
-                    };
+                    let z_path = export_paths.get(ov_zip_file_idx).ok_or_else(|| "Overlay zip index out of bounds".to_string())?;
+                    
+                    let z_path_owned = z_path.clone();
+                    let archive_mutex = zip_access
+                        .get_or_open(&z_path_owned)
+                        .map_err(|e| e.to_string())?;
 
-                    if let Ok(mut ov_file) = archive.by_index(ov_zip_entry_idx) {
-                        let ov_path = dest_dir.join(format!("{}-overlay.{}", id, ov_ext));
-                        if let Ok(mut ov_out) = std::fs::File::create(&ov_path) {
-                            let _ = std::io::copy(&mut ov_file, &mut ov_out);
-                        }
+                    {
+                        let mut archive_guard = archive_mutex.lock().map_err(|e| e.to_string())?;
+                        let out_path = dest_dir.join(format!("{}-overlay.{}", id, ov_ext));
+                        let _ = extract_zip_entry_to_file(&mut archive_guard, ov_zip_entry_idx, &out_path);
                     }
                 }
             }
@@ -239,7 +273,7 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
             let _ = tokio::fs::remove_file(&segment_paths[0]).await;
         }
     } else if segment_paths.len() > 1 {
-        concat_video_segments(&ctx.app, &segment_paths, &final_path).await?;
+        concat_video_segments(&ctx.app, &ctx.ffmpeg_sem, &segment_paths, &final_path).await?;
         for p in &segment_paths {
             let _ = tokio::fs::remove_file(p).await;
         }
@@ -247,14 +281,36 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
         return Err(crate::error::AppError::Message("No segments extracted".to_string()));
     }
 
+    info!(
+        id = %item.id,
+        segments = segment_paths.len(),
+        elapsed_ms = overall_start.elapsed().as_millis(),
+        "acquire: extracted from source ZIP"
+    );
     Ok(final_path)
+}
+
+fn extract_zip_entry_to_file(
+    archive: &mut ZipArchive<File>,
+    entry_idx: usize,
+    out_path: &Path,
+) -> std::result::Result<(), String> {
+    let mut zip_file = archive.by_index(entry_idx).map_err(|e| e.to_string())?;
+    let mut outfile = File::create(out_path).map_err(|e| format!("Create file failed ({}): {}", out_path.display(), e))?;
+    std::io::copy(&mut zip_file, &mut outfile).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 async fn concat_video_segments(
     app: &tauri::AppHandle,
+    ffmpeg_sem: &tokio::sync::Semaphore,
     segment_paths: &[PathBuf],
     output_path: &Path,
 ) -> Result<()> {
+    let _permit = ffmpeg_sem
+        .acquire()
+        .await
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
     let stem = output_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -268,8 +324,10 @@ async fn concat_video_segments(
     let list_content: String = segment_paths
         .iter()
         .map(|p| {
-            let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-            format!("file '{}'", abs.to_string_lossy().replace('\\', "/"))
+            let path_str = p.to_string_lossy().replace('\\', "/");
+            // On Windows, canonicalize can add \\?\ prefix which ffmpeg may not like.
+            // We use the raw path if it's already absolute enough.
+            format!("file '{}'", path_str)
         })
         .collect::<Vec<_>>()
         .join("\n");

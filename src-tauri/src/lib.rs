@@ -10,9 +10,11 @@ pub mod downloader;
 pub mod error;
 pub mod extractor;
 pub mod fs;
+pub mod infra;
 pub mod metadata;
 pub mod models;
 pub mod pipeline;
+pub mod services;
 
 /// Returns the log directory path. Creates it if it doesn't exist.
 fn log_dir() -> Option<PathBuf> {
@@ -80,11 +82,12 @@ pub fn run() {
             }
             Ok(())
         })
-        .manage(commands::AppState {
+        .manage(services::session::AppState {
             sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_zip_structure,
+            commands::set_export_paths,
             commands::initialize_and_load,
             commands::get_memories_state,
             commands::resolve_local_media_paths,

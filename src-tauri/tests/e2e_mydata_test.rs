@@ -1,3 +1,5 @@
+#![cfg(feature = "e2e_mydata")]
+
 //! End-to-end test using the real mydata~1771881423240.zip Snapchat export.
 //! Verifies: JSON extraction, index building, extraction, combine, and output.
 
@@ -197,8 +199,9 @@ fn test_extract_json_from_mydata_zip() {
     init_test_logging();
     let zip_path = test_zip_path();
     let (json_content, _memories_dir) = fs::extract_json_from_zip(&zip_path).expect("extract JSON");
-    assert!(!json_content.is_empty());
-    assert!(json_content.contains("Saved Media"));
+    let content_str = json_content.as_deref().unwrap_or("");
+    assert!(!content_str.is_empty());
+    assert!(content_str.contains("Saved Media"));
 }
 
 #[test]
@@ -206,7 +209,7 @@ fn test_parse_memories_from_mydata_json() {
     init_test_logging();
     let zip_path = test_zip_path();
     let (json_content, _) = fs::extract_json_from_zip(&zip_path).expect("extract JSON");
-    let items = parse_memories_from_json(&json_content);
+    let items = parse_memories_from_json(json_content.as_deref().unwrap_or(""));
     assert!(!items.is_empty(), "Should have parsed memories");
 }
 
@@ -228,10 +231,10 @@ fn test_build_indexes_from_mydata_zip() {
     init_test_logging();
     let zip_path = test_zip_path();
     let (json_content, _) = fs::extract_json_from_zip(&zip_path).expect("extract JSON");
-    let items = parse_memories_from_json(&json_content);
+    let items = parse_memories_from_json(json_content.as_deref().unwrap_or(""));
     let ids = collect_ids_for_index(&items);
 
-    let main_index = build_main_media_zip_index(&zip_path, &ids).expect("main index");
+    let main_index = build_main_media_zip_index(&[zip_path.clone()], &ids).expect("main index");
     let overlay_items: Vec<pipeline::OverlayItemRef> = items
         .iter()
         .map(|i| pipeline::OverlayItemRef {
@@ -239,7 +242,7 @@ fn test_build_indexes_from_mydata_zip() {
             segment_ids: i.segment_ids.clone(),
         })
         .collect();
-    let overlay_index = build_overlay_zip_index(&zip_path, &overlay_items).expect("overlay index");
+    let overlay_index = build_overlay_zip_index(&[zip_path.clone()], &overlay_items).expect("overlay index");
 
     assert!(!main_index.is_empty(), "main index should have entries");
     // At least one item with overlay (e.g. 24801068-6038-4BC2-830C-051CFEEF4F6D)
@@ -252,10 +255,10 @@ async fn test_extract_and_combine_single_image_from_mydata() {
     init_test_logging();
     let zip_path = test_zip_path();
     let (json_content, _) = fs::extract_json_from_zip(&zip_path).expect("extract JSON");
-    let items = parse_memories_from_json(&json_content);
+    let items = parse_memories_from_json(json_content.as_deref().unwrap_or(""));
     let ids = collect_ids_for_index(&items);
 
-    let main_index = build_main_media_zip_index(&zip_path, &ids).expect("main index");
+    let main_index = build_main_media_zip_index(&[zip_path.clone()], &ids).expect("main index");
     let overlay_items: Vec<pipeline::OverlayItemRef> = items
         .iter()
         .map(|i| pipeline::OverlayItemRef {
@@ -263,7 +266,7 @@ async fn test_extract_and_combine_single_image_from_mydata() {
             segment_ids: i.segment_ids.clone(),
         })
         .collect();
-    let overlay_index = build_overlay_zip_index(&zip_path, &overlay_items).ok();
+    let overlay_index = build_overlay_zip_index(&[zip_path.clone()], &overlay_items).ok();
 
     // Pick an image with overlay: 24801068-6038-4BC2-830C-051CFEEF4F6D
     let target_id = items
@@ -326,10 +329,10 @@ async fn test_extract_and_combine_video_with_overlay_from_mydata() {
     init_test_logging();
     let zip_path = test_zip_path();
     let (json_content, _) = fs::extract_json_from_zip(&zip_path).expect("extract JSON");
-    let items = parse_memories_from_json(&json_content);
+    let items = parse_memories_from_json(json_content.as_deref().unwrap_or(""));
     let ids = collect_ids_for_index(&items);
 
-    let main_index = build_main_media_zip_index(&zip_path, &ids).expect("main index");
+    let main_index = build_main_media_zip_index(&[zip_path.clone()], &ids).expect("main index");
     let overlay_items: Vec<pipeline::OverlayItemRef> = items
         .iter()
         .map(|i| pipeline::OverlayItemRef {
@@ -337,7 +340,7 @@ async fn test_extract_and_combine_video_with_overlay_from_mydata() {
             segment_ids: i.segment_ids.clone(),
         })
         .collect();
-    let overlay_index = build_overlay_zip_index(&zip_path, &overlay_items).ok();
+    let overlay_index = build_overlay_zip_index(&[zip_path.clone()], &overlay_items).ok();
 
     // Pick a video with overlay: 2D98014C-444F-4D50-99BE-940E4E883393 has main.mp4 + overlay.png
     let target_id = items
@@ -411,7 +414,7 @@ async fn test_hydrate_state_from_folder() {
     init_test_logging();
     let zip_path = test_zip_path();
     let (json_content, _) = fs::extract_json_from_zip(&zip_path).expect("extract JSON");
-    let items = parse_memories_from_json(&json_content);
+    let items = parse_memories_from_json(json_content.as_deref().unwrap_or(""));
     let ids = collect_ids_for_index(&items);
     let overlay_items: Vec<pipeline::OverlayItemRef> = items
         .iter()
@@ -421,8 +424,8 @@ async fn test_hydrate_state_from_folder() {
         })
         .collect();
 
-    let main_index = build_main_media_zip_index(&zip_path, &ids).expect("main index");
-    let overlay_index = build_overlay_zip_index(&zip_path, &overlay_items).ok();
+    let main_index = build_main_media_zip_index(&[zip_path.clone()], &ids).expect("main index");
+    let overlay_index = build_overlay_zip_index(&[zip_path.clone()], &overlay_items).ok();
 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let dest_dir = temp_dir.path().join("output");

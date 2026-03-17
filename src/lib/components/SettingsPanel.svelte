@@ -11,6 +11,7 @@
     import { Label } from "$lib/components/ui/label";
     import { Switch } from "$lib/components/ui/switch";
     import { Button } from "$lib/components/ui/button";
+    import { Input } from "$lib/components/ui/input";
     import { Settings } from "lucide-svelte";
     import { appConfig } from "$lib/config.svelte";
 
@@ -60,15 +61,14 @@
             {/snippet}
         </Tooltip.Trigger>
         <Tooltip.Content sideOffset={4}>
-            <p>Settings & Configuration</p>
+            <p>Settings</p>
         </Tooltip.Content>
     </Tooltip.Root>
     <DialogContent>
         <DialogHeader>
-            <DialogTitle>Configuration</DialogTitle>
+            <DialogTitle>Settings</DialogTitle>
             <DialogDescription>
-                Adjust pipeline limits and file strategies. Changes apply on the
-                next backup run.
+                Configure performance and UX preferences. Some changes apply on the next backup run.
             </DialogDescription>
         </DialogHeader>
 
@@ -93,13 +93,12 @@
                 <Label for="maxConcurrency" class="text-sm font-medium"
                     >Max Concurrent Items</Label
                 >
-                <input
+                <Input
                     id="maxConcurrency"
                     type="number"
                     min="1"
                     max="32"
                     placeholder="Auto (CPU cores)"
-                    class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     bind:value={maxConcurrencyInput}
                 />
                 <p class="text-[11px] text-muted-foreground">

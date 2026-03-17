@@ -2,10 +2,8 @@
   import { ask, open } from "@tauri-apps/plugin-dialog";
   import { parseMemoriesJson, type ParsedMemory } from "$lib/parser";
   import confetti from "canvas-confetti";
-  import { toast } from "svelte-sonner";
   import { tauriService } from "$lib/services/tauri";
   import { appConfig } from "$lib/config.svelte";
-  import { tweened, type Tweened } from "svelte/motion";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
@@ -15,87 +13,45 @@
   import { Session } from "$lib/session.svelte";
   import { fade } from "svelte/transition";
 
-  let tabs = $state<Session[]>([]);
-  let activeTabId = $state<string>("");
-  let activeTab = $derived(tabs.find((t) => t.id === activeTabId) || null);
+  let session = $state<Session>(new Session(crypto.randomUUID(), "Backup"));
 
   let hasAttemptedAppLoad = $state(false);
 
-  let listeners = new Map<string, UnlistenFn>();
+  let unlistenAll: UnlistenFn | null = null;
+  let unlistenStatus: UnlistenFn | null = null;
+  let unlistenZip: UnlistenFn | null = null;
 
-  let dummyProgress = tweened(0);
-  let progressStore = $derived(
-    activeTab ? activeTab.parsingProgress : dummyProgress,
-  );
+  let dbInitToken = $state(0);
 
-  $effect(() => {
-    if (tabs.length === 0) {
-      handleNewTab();
-    }
-  });
-
-  $effect(() => {
-    tabs.forEach((tab) => {
-      if (!listeners.has(tab.id)) {
-        const p = tauriService.listenForMemoryUpdates(tab.id, (updatedMemory) => {
-          const index = tab.memories.findIndex((m) => m.id === updatedMemory.id);
-          if (index !== -1) {
-            tab.memories[index] = updatedMemory;
-            tab.memories = [...tab.memories];
-          }
-        });
-        p.then((fn) => listeners.set(tab.id, fn));
+  async function attachListeners(sessionId: string) {
+    [unlistenAll, unlistenStatus, unlistenZip].forEach((fn) => fn?.());
+    unlistenAll = await tauriService.listenForMemoryUpdates(sessionId, (updatedMemory) => {
+      const index = session.memories.findIndex((m) => m.id === updatedMemory.id);
+      if (index !== -1) {
+        session.memories[index] = updatedMemory;
+        session.memories = [...session.memories];
       }
     });
+    unlistenStatus = await tauriService.listenForPipelineStatus(sessionId, (status) => {
+      session.statusMessage = status;
+    });
+    unlistenZip = await tauriService.listenForZipIndexingProgress(sessionId, (payload) => {
+      session.zipProgress[payload.path] = payload.progress;
+    });
+  }
 
-    const currentIds = new Set(tabs.map((t) => t.id));
-    for (const [id, fn] of listeners.entries()) {
-      if (!currentIds.has(id)) {
-        fn();
-        listeners.delete(id);
-      }
-    }
+  onMount(() => {
+    attachListeners(session.id).catch(console.error);
+    return () => {
+      [unlistenAll, unlistenStatus, unlistenZip].forEach((fn) => fn?.());
+    };
   });
-
-  function handleNewTab() {
-    const id = crypto.randomUUID();
-    const num = tabs.length > 0 ? tabs.length + 1 : 1;
-    const tab = new Session(id, `Backup ${num}`);
-    tabs.push(tab);
-    activeTabId = id;
-  }
-
-  async function handleCloseTab(id: string) {
-    const tab = tabs.find((t) => t.id === id);
-    if (tab?.isProcessing) {
-      const confirmed = await ask(
-        `Backup "${tab.name}" is currently in progress. Are you sure you want to close this tab?`,
-        { title: "Confirm Close Tab", kind: "warning" },
-      );
-      if (!confirmed) return;
-    }
-
-    tauriService.closeSession(id).catch(console.error);
-    const index = tabs.findIndex((t) => t.id === id);
-    if (index !== -1) {
-      tabs.splice(index, 1);
-      if (activeTabId === id && tabs.length > 0) {
-        activeTabId = tabs[Math.max(0, index - 1)].id;
-      } else if (tabs.length === 0) {
-        handleNewTab();
-      }
-    }
-  }
 
   // Completion detection
   $effect(() => {
-    const tab = activeTab;
-    if (!tab) return;
-
-    if (tab.isProcessing && tab.isAllProcessed) {
-      tab.isProcessing = false;
-      if (tab.failedCount === 0) {
-        toast.success(`${tab.name} successful!`);
+    if (session.isProcessing && session.isAllProcessed) {
+      session.isProcessing = false;
+      if (session.failedCount === 0) {
         confetti({
           particleCount: 150,
           spread: 70,
@@ -103,147 +59,169 @@
           colors: ["#FFFC00", "#ffffff", "#000000"],
         });
       } else {
-        toast.warning(`${tab.name} finished with ${tab.failedCount} error(s).`, {
-          description: "Some items could not be backed up.",
-          duration: 6000,
-        });
+        // no toast; UI already shows failed count
       }
     }
   });
 
-  // Auto-load saved config on first tab
+  // Auto-load saved config on first run
   $effect(() => {
-    const tab = tabs[0];
     if (
-      tabs.length === 1 &&
-      tab &&
       !hasAttemptedAppLoad &&
-      appConfig.lastZip &&
+      appConfig.lastZips.length > 0 &&
       appConfig.lastOutput
     ) {
       hasAttemptedAppLoad = true;
-      tab.hasAttemptedLoad = true;
-      tab.selectedZips = [appConfig.lastZip];
-      tab.selectedOutput = appConfig.lastOutput;
+      session.hasAttemptedLoad = true;
+      session.selectedOutput = appConfig.lastOutput;
 
-      tab.isParsing = true;
-      tab.parsingProgress.set(50, { duration: 1000 });
-
-      tauriService
-        .checkZipStructure(tab.id, appConfig.lastZip)
-        .then((content) => {
-          if (content) {
-            tab.parsedItems = parseMemoriesJson(content);
+      // Start loading each ZIP sequentially
+      (async () => {
+        session.activeParsingTasks++;
+        try {
+          for (const zipPath of appConfig.lastZips) {
+            await processZipPath(zipPath);
           }
-          tab.isParsing = false;
-        })
-        .catch((err) => {
-          console.error("Auto reload zip fail", err);
-          tab.selectedZips = [];
-          tab.selectedOutput = null;
-          appConfig.lastZip = null;
-          appConfig.lastOutput = null;
-          appConfig.save();
-          tab.isParsing = false;
-        });
+        } finally {
+          session.activeParsingTasks--;
+        }
+      })();
     }
   });
 
   // DB init once zips are parsed
   $effect(() => {
-    const tab = activeTab;
-    if (!tab) return;
     if (
-      tab.selectedZips.length > 0 &&
-      tab.selectedOutput &&
-      tab.parsedItems.length > 0 &&
-      tab.memories.length === 0 &&
-      !tab.isInitializingDb &&
-      !tab.isParsing
+      session.selectedZips.length > 0 &&
+      session.selectedOutput &&
+      session.parsedItems.length > 0 &&
+      session.memories.length === 0 &&
+      !session.isInitializingDb &&
+      !session.isParsing
     ) {
-      tab.isInitializingDb = true;
-      tab.parsingProgress.set(80, { duration: 1000 });
+      const token = ++dbInitToken;
+      const outputAtStart = session.selectedOutput;
+      session.isInitializingDb = true;
+      session.parsingProgress.set(80, { duration: 1000 });
 
       tauriService
-        .initializeAndLoad(tab.id, tab.selectedOutput!, tab.parsedItems)
+        .initializeAndLoad(session.id, session.selectedOutput!, session.parsedItems)
         .then(async (items) => {
-          tab.memories = items as ParsedMemory[];
-          await tab.parsingProgress.set(100, { duration: 500 });
+          // If destination changed mid-init, ignore outdated results.
+          if (token !== dbInitToken || session.selectedOutput !== outputAtStart) return;
+          session.memories = items as ParsedMemory[];
+          await session.parsingProgress.set(100, { duration: 500 });
         })
         .catch((err) => {
-          toast.error(`DB Init error: ${err}`);
+          console.error("DB Init error:", err);
         })
         .finally(() => {
-          tab.isInitializingDb = false;
+          if (token === dbInitToken) {
+            session.isInitializingDb = false;
+          }
         });
     }
   });
 
-  async function processZipPath(path: string) {
-    const tab = activeTab;
-    if (!tab) return;
-    try {
-      tab.isParsing = true;
-      tab.parsingProgress.set(0, { duration: 0 });
-      tab.parsingProgress.set(85, { duration: 2500 });
+  function syncValidExportPaths() {
+    const valid = session.selectedZips.filter((p) => session.zipValidity[p] === "valid");
+    tauriService.setExportPaths(session.id, valid).catch(console.error);
+  }
 
-      if (!tab.selectedZips.includes(path)) {
-        tab.selectedZips.push(path);
+  async function processZipPath(path: string) {
+    try {
+      session.activeParsingTasks++;
+      session.parsingProgress.set(0, { duration: 0 });
+      session.parsingProgress.set(85, { duration: 2500 });
+      
+      // Initialize progress for this specific zip
+      session.zipProgress[path] = 0;
+      session.zipValidity[path] = "checking";
+
+      if (!session.selectedZips.includes(path)) {
+        session.selectedZips.push(path);
       }
 
-      const jsonContent = await tauriService.checkZipStructure(tab.id, path);
-      tab.parsingProgress.set(95, { duration: 300 });
+      // Retry mechanism for ZIP loading
+      let jsonContent: string | null = null;
+      let lastErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          // Update progress slightly per attempt if it's taking time
+          session.zipProgress[path] = (attempt - 1) * 20;
+          jsonContent = await tauriService.checkZipStructure(session.id, path);
+          session.zipProgress[path] = 80;
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < 3) {
+            console.warn(`Retry ${attempt}/3 for ${path}: ${err}`);
+            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+          }
+        }
+      }
+
+      if (lastErr && !jsonContent) {
+        session.zipValidity[path] = "invalid";
+        session.zipProgress[path] = 100;
+        syncValidExportPaths();
+        return;
+      }
+
+      session.parsingProgress.set(95, { duration: 300 });
 
       let newItemsCount = 0;
       if (jsonContent) {
         const newItems = parseMemoriesJson(jsonContent);
         newItemsCount = newItems.length;
-        const existingIds = new Set(tab.parsedItems.map((i) => i.id));
-        const mergedItems = [...tab.parsedItems];
+        const existingIds = new Set(session.parsedItems.map((i) => i.id));
+        const mergedItems = [...session.parsedItems];
         for (const item of newItems) {
           if (!existingIds.has(item.id)) {
             mergedItems.push(item);
             existingIds.add(item.id);
           }
         }
-        tab.parsedItems = mergedItems;
+        session.parsedItems = mergedItems;
       }
 
-      if (tab.parsedItems.length === 0 && !jsonContent) {
-        toast.info(`Added ${path.split(/[\\/]/).pop()} (no memories found)`);
-        appConfig.lastZip = path;
-        appConfig.save();
-        await tab.parsingProgress.set(100, { duration: 500 });
-        tab.isParsing = false;
-      } else if (tab.parsedItems.length === 0) {
-        toast.error("No memories found in JSON.");
-        tab.isParsing = false;
-        tab.selectedZips = tab.selectedZips.filter((z) => z !== path);
+      // Valid Snapchat export must produce at least one memory item from the ZIP JSON.
+      if (!jsonContent || newItemsCount === 0) {
+        session.zipValidity[path] = "invalid";
+        session.zipProgress[path] = 100;
+        await session.parsingProgress.set(100, { duration: 500 });
+        syncValidExportPaths();
       } else {
-        appConfig.lastZip = path;
-        appConfig.save();
-        await tab.parsingProgress.set(100, { duration: 500 });
-        tab.isParsing = false;
-        if (newItemsCount > 0) {
-            toast.success(`Loaded ${newItemsCount.toLocaleString()} memories from ${path.split(/[\\/]/).pop()}`);
-        } else {
-            toast.success(`Added ${path.split(/[\\/]/).pop()}`);
+        session.zipValidity[path] = "valid";
+        if (!appConfig.lastZips.includes(path)) {
+          appConfig.lastZips.push(path);
+          appConfig.save();
         }
+        session.zipProgress[path] = 100;
+        await session.parsingProgress.set(100, { duration: 500 });
+        syncValidExportPaths();
       }
     } catch (err) {
-      toast.error(`Error processing zip: ${err}`);
-      tab.selectedZips = tab.selectedZips.filter((z) => z !== path);
-      tab.isParsing = false;
+      console.error("Error processing zip:", err);
+      session.zipValidity[path] = "invalid";
+      session.zipProgress[path] = 100;
+      syncValidExportPaths();
+    } finally {
+      session.activeParsingTasks--;
     }
   }
 
   function removeZip(path: string) {
-    const tab = activeTab;
-    if (!tab) return;
-    tab.selectedZips = tab.selectedZips.filter((z) => z !== path);
-    if (tab.selectedZips.length === 0) {
-      tab.parsedItems = [];
-      tab.memories = [];
+    session.selectedZips = session.selectedZips.filter((z) => z !== path);
+    appConfig.lastZips = appConfig.lastZips.filter((z) => z !== path);
+    appConfig.save();
+    delete session.zipProgress[path];
+    delete session.zipValidity[path];
+    syncValidExportPaths();
+
+    if (session.selectedZips.length === 0) {
+      session.parsedItems = [];
+      session.memories = [];
     }
   }
 
@@ -257,18 +235,23 @@
       });
       if (result) {
         const paths = Array.isArray(result) ? result : [result];
-        for (const p of paths) {
-          await processZipPath(p);
+        
+        // Use a persistent counter for the whole batch to prevent premature DB init
+        session.activeParsingTasks++; 
+        try {
+          for (const p of paths) {
+            await processZipPath(p);
+          }
+        } finally {
+          session.activeParsingTasks--;
         }
       }
     } catch (err) {
-      toast.error(`Dialog error: ${err}`);
+      console.error("Dialog error:", err);
     }
   }
 
   async function handleSelectOutput() {
-    const tab = activeTab;
-    if (!tab) return;
     try {
       const result = await open({
         directory: true,
@@ -276,84 +259,123 @@
         title: "Select Output Destination Folder",
       });
       if (result) {
-        tab.selectedOutput = Array.isArray(result) ? result[0] : result;
-        appConfig.lastOutput = tab.selectedOutput;
+        // Cancel any in-flight DB init for the previous destination.
+        dbInitToken++;
+        session.isInitializingDb = false;
+
+        session.selectedOutput = Array.isArray(result) ? result[0] : result;
+        appConfig.lastOutput = session.selectedOutput;
         appConfig.save();
       }
     } catch (err) {
-      toast.error(`Directory error: ${err}`);
+      console.error("Directory error:", err);
     }
   }
 
   async function startBackup() {
-    const tab = activeTab;
-    if (!tab) return;
-    tab.isProcessing = true;
-    toast.info(`Starting ${tab.name}...`);
+    // Guard: If Snapchat export is split into mydata~<epoch>-N.zip parts and there's a gap,
+    // don't start. The UI also disables the button, but keep this as a safety net.
+    {
+      const re = /(?:^|[\\/])mydata~(\d+)(?:-(\d+))?\.zip$/i;
+      const byBase = new Map<string, Set<number>>();
+      for (const p of session.selectedZips) {
+        const m = p.match(re);
+        if (!m) continue;
+        const base = m[1];
+        const part = m[2] ? Number(m[2]) : 1;
+        if (!Number.isFinite(part) || part <= 0) continue;
+        if (!byBase.has(base)) byBase.set(base, new Set());
+        byBase.get(base)!.add(part);
+      }
+      for (const [base, set] of byBase.entries()) {
+        const parts = Array.from(set).sort((a, b) => a - b);
+        if (parts.length <= 1) continue;
+        const min = parts[0];
+        const max = parts[parts.length - 1];
+        for (let i = min; i <= max; i++) {
+          if (!set.has(i)) {
+            console.error(`Missing ZIP part ${i} for mydata~${base}.`);
+            session.isProcessing = false;
+            session.statusMessage = `Missing ZIP part ${i} (mydata~${base}). Add it before starting.`;
+            return;
+          }
+        }
+      }
+    }
+
+    session.isProcessing = true;
     try {
       await tauriService.startPipeline(
-        tab.id,
+        session.id,
         appConfig.overwriteExisting,
         appConfig.maxConcurrency,
-        tab.selectedOutput,
+        session.selectedOutput,
       );
     } catch (err) {
-      toast.error(`Pipeline error: ${err}`);
-      tab.isProcessing = false;
+      console.error("Pipeline error:", err);
+      session.isProcessing = false;
     }
   }
 
   async function togglePause() {
-    const tab = activeTab;
-    if (!tab) return;
-    if (tab.isPaused) {
-      toast.info(`Resuming ${tab.name}...`);
-      tab.isProcessing = true;
+    if (session.isPaused) {
+      session.isProcessing = true;
       try {
-        await tauriService.startPipeline(tab.id, false, appConfig.maxConcurrency, tab.selectedOutput);
-        tab.isPaused = false;
+        await tauriService.startPipeline(session.id, false, appConfig.maxConcurrency, session.selectedOutput);
+        session.isPaused = false;
       } catch (err) {
-        toast.error(`Resume error: ${err}`);
+        console.error("Resume error:", err);
       }
     } else {
-      toast.info(`Pausing ${tab.name}...`);
       try {
-        await tauriService.pausePipeline(tab.id);
-        tab.isPaused = true;
-        tab.isProcessing = false;
+        await tauriService.pausePipeline(session.id);
+        session.isPaused = true;
+        session.isProcessing = false;
       } catch (err) {
-        toast.error(`Pause error: ${err}`);
+        console.error("Pause error:", err);
       }
     }
+  }
+
+  async function cancelAndReset() {
+    if (session.isProcessing || session.isPaused) {
+      const confirmed = await ask(
+        "This will cancel the current backup and start a new one. Continue?",
+        { title: "Cancel backup", kind: "warning" },
+      );
+      if (!confirmed) return;
+    }
+
+    const oldId = session.id;
+    // Stop backend work + clear DB/session data.
+    try { await tauriService.pausePipeline(oldId); } catch {}
+    try { await tauriService.cleanupDatabase(oldId); } catch {}
+    try { await tauriService.closeSession(oldId); } catch {}
+
+    // New single session.
+    session = new Session(crypto.randomUUID(), "Backup");
+    hasAttemptedAppLoad = true; // don't auto-load into a "new" run
+    await attachListeners(session.id);
   }
 
 
 </script>
 
 <div class="h-screen w-full flex flex-col bg-background text-foreground overflow-hidden font-sans">
-  <Header
-    {tabs}
-    {activeTabId}
-    onTabChange={(id) => (activeTabId = id)}
-    onNewTab={handleNewTab}
-    onCloseTab={handleCloseTab}
-  />
+  <Header />
 
-  {#if activeTab}
-    <main class="flex-1 overflow-hidden relative">
-      <!-- Always-visible ProcessingView -->
-      <div class="absolute inset-0" in:fade={{ duration: 200 }}>
-        <ProcessingView
-          session={activeTab}
-          onSelectOutput={handleSelectOutput}
-          onStartBackup={startBackup}
-          onTogglePause={togglePause}
-          onAddZip={handleSelectZip}
-          onDropZip={processZipPath}
-          onRemoveZip={removeZip}
-        />
-      </div>
-
-    </main>
-  {/if}
+  <main class="flex-1 overflow-hidden relative">
+    <div class="absolute inset-0" in:fade={{ duration: 200 }}>
+      <ProcessingView
+        {session}
+        onSelectOutput={handleSelectOutput}
+        onStartBackup={startBackup}
+        onTogglePause={togglePause}
+        onAddZip={handleSelectZip}
+        onDropZip={processZipPath}
+        onRemoveZip={removeZip}
+        onCancelAndReset={cancelAndReset}
+      />
+    </div>
+  </main>
 </div>

@@ -48,3 +48,7 @@ base64 = "0.22.1"
 [dev-dependencies]
 tempfile = "3.26.0"
 url = "2.5"
+
+[features]
+# Opt-in heavy end-to-end test that depends on a large real Snapchat export zip.
+e2e_mydata = []

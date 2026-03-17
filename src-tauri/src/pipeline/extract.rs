@@ -58,6 +58,11 @@ pub(crate) async fn do_extract_step<R: MemoryRepository>(
         if msg.item.state == ProcessingState::Acquired {
             if raw_path.exists() {
                 info!(id = %msg.item.id, raw = %raw_path.display(), "extract: unpacking ZIP");
+                let _permit = ctx
+                    .io_sem
+                    .acquire()
+                    .await
+                    .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
                 let extracted = extractor::extract_memory(raw_path, &msg.item.id, &ctx.dest_dir)
                     .await
                     .map_err(|e| crate::error::AppError::Extraction(e))?;

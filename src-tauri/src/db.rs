@@ -6,6 +6,7 @@ use tokio_rusqlite::Connection;
 
 pub trait MemoryRepository: Send + Sync {
     fn insert_or_ignore_memory(&self, item: &MemoryItem) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn bulk_insert_memories(&self, items: Vec<MemoryItem>) -> impl std::future::Future<Output = Result<()>> + Send;
     fn update_state(
         &self,
         id: &str,
@@ -99,6 +100,37 @@ impl MemoryRepository for DbManager {
                     segment_ids_json
                 ],
             )
+        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        Ok(())
+    }
+
+    async fn bulk_insert_memories(&self, items: Vec<MemoryItem>) -> Result<()> {
+        self.conn.call(move |conn| {
+            let tx = conn.transaction()?;
+            {
+                let mut stmt = tx.prepare_cached(
+                    "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+                )?;
+                for item in items {
+                    let segment_ids_json = item.segment_ids.as_ref().and_then(|s| serde_json::to_string(s).ok());
+                    stmt.execute(rusqlite::params![
+                        item.id,
+                        item.download_url,
+                        item.original_date,
+                        item.location,
+                        item.state.as_ref(),
+                        item.error_message,
+                        item.extension,
+                        item.has_overlay as i32,
+                        item.has_thumbnail as i32,
+                        item.media_type,
+                        segment_ids_json
+                    ])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
         }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
         Ok(())
     }
