@@ -67,9 +67,6 @@
     <DialogContent>
         <DialogHeader>
             <DialogTitle>Settings</DialogTitle>
-            <DialogDescription>
-                Configure performance and UX preferences. Some changes apply on the next backup run.
-            </DialogDescription>
         </DialogHeader>
 
         <div class="grid gap-6 py-6">
