@@ -42,8 +42,10 @@ pub fn extract_from_export_zip(
     date_str: Option<&str>,
 ) -> std::result::Result<PathBuf, String> {
     use std::fs::File;
+    use std::io::BufReader;
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
 
     let clean_date = date_str.map(|s| crate::metadata::get_clean_date_prefix(s));
     let key_exact = clean_date.as_ref().map(|d| format!("{}|{}", d, id));
@@ -171,27 +173,23 @@ pub(crate) fn id_appears_as_token(name: &str, id: &str) -> bool {
 /// Scan fallback when index lookup fails. Finds main media by date + id.
 /// Returns (zip_index, ext) if exactly one match, or None.
 pub(crate) fn scan_main_by_date_and_id(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+    archive: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>,
     date_prefix: &str,
     date_only: Option<&str>,
     seg_id: &str,
 ) -> Option<(usize, String)> {
     let mut candidates: Vec<(usize, String)> = Vec::new();
-    for i in 0..archive.len() {
-        // Use `ok()` + `continue` instead of `?` — a single unreadable or non-dated
-        // entry must NOT abort the entire scan and return None for all items.
-        let zip_file = match archive.by_index(i) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let name = zip_file.name();
+    // Optimization: avoid by_index(i) which reads local headers.
+    // zip-rs file_names() is O(1) per entry once central directory is read.
+    let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
+    for (i, name) in names.into_iter().enumerate() {
         let name_lower = name.to_lowercase();
         if name_lower.contains("-overlay") {
             continue;
         }
-        let file_date = match extract_date_prefix_from_name(name) {
+        let file_date = match extract_date_prefix_from_name(&name) {
             Some(d) => d,
-            None => continue, // JSON files, folder entries, etc. — skip
+            None => continue,
         };
         let file_date_only = file_date.get(..10);
         let date_matches = file_date == date_prefix
@@ -204,7 +202,7 @@ pub(crate) fn scan_main_by_date_and_id(
         if !id_appears_as_token(&name_lower, seg_id) {
             continue;
         }
-        let ext = Path::new(name)
+        let ext = Path::new(&name)
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("mp4")
@@ -224,18 +222,14 @@ pub(crate) fn scan_main_by_date_and_id(
 ///
 /// Prefers `-main` files when tie-breaking.
 pub(crate) fn scan_main_by_best_date_match(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+    archive: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>,
     target_epoch_seconds: Option<i64>,
     seg_id: &str,
 ) -> Option<(usize, String)> {
     let mut best: Option<(usize, String, i64, bool)> = None; // (idx, ext, abs_diff, is_main)
+    let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
 
-    for i in 0..archive.len() {
-        let zip_file = match archive.by_index(i) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let name = zip_file.name();
+    for (i, name) in names.into_iter().enumerate() {
         let name_lower = name.to_lowercase();
         if name_lower.contains("-overlay") {
             continue;
@@ -244,14 +238,14 @@ pub(crate) fn scan_main_by_best_date_match(
             continue;
         }
 
-        let ext = Path::new(name)
+        let ext = Path::new(&name)
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("mp4")
             .to_string();
         let is_main = name_lower.contains("-main");
 
-        let abs_diff = match (target_epoch_seconds, extract_date_prefix_from_name(name).as_deref().and_then(date_prefix_to_epoch_seconds)) {
+        let abs_diff = match (target_epoch_seconds, extract_date_prefix_from_name(&name).as_deref().and_then(date_prefix_to_epoch_seconds)) {
             (Some(t), Some(f)) => (t - f).abs(),
             _ => i64::MAX / 2,
         };
@@ -370,7 +364,6 @@ pub fn build_pipeline_zip_indexes(
     let mut overlay_temp: HashMap<String, (usize, usize, String, usize)> = HashMap::new();
 
     // 1. Pre-calculate lookup maps for fast ID resolving
-    // Maps lowercased (hyphenated or not) ID to the original ID from main_ids
     let mut main_id_map: HashMap<String, String> = HashMap::new();
     for id in main_ids {
         let id_lower = id.to_lowercase();
@@ -381,7 +374,6 @@ pub fn build_pipeline_zip_indexes(
         }
     }
 
-    // Maps lowercased segment ID to the primary OverlayItemRef
     let mut segment_to_primary: HashMap<String, (&OverlayItemRef, HashSet<String>)> = HashMap::new();
     for item in overlay_refs {
         let mut item_ids: HashSet<String> = HashSet::new();
@@ -405,129 +397,142 @@ pub fn build_pipeline_zip_indexes(
         }
     }
 
-    for (zip_file_idx, zip_path) in zip_paths.iter().enumerate() {
-        let zip_start = std::time::Instant::now();
-        let zip_path_str = zip_path.to_string_lossy().to_string();
-        if let Some(app) = app {
-            let _ = app.emit(
-                &format!("zip-indexing-progress-{}", session_id),
-                ZipProgressPayload {
-                    path: zip_path_str.clone(),
-                    progress: 0.0,
-                },
-            );
-        }
+    // Parallel processing across ZIP archives using scoped threads (Rust 1.63+)
+    // to avoid 'static lifetime requirements on shared maps.
+    std::thread::scope(|s| {
+        let mut handlers = Vec::new();
+        for (zip_file_idx, zip_path) in zip_paths.iter().enumerate() {
+            let zip_path = zip_path.clone();
+            let session_id = session_id.to_string();
+            let app = app.map(|a| a.clone());
+            let main_id_map = &main_id_map;
+            let segment_to_primary = &segment_to_primary;
 
-        let file = std::fs::File::open(zip_path)
-            .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| format!("Invalid zip {}: {}", zip_path.display(), e))?;
-        let len = archive.len();
+            handlers.push(s.spawn(move || -> std::result::Result<(HashMap<String, (usize, usize, String)>, HashMap<String, (usize, usize, String, usize)>), String> {
+                let zip_start = std::time::Instant::now();
+                let mut local_main = HashMap::new();
+                let mut local_overlay = HashMap::new();
+                let zip_path_str = zip_path.to_string_lossy().to_string();
 
-        for i in 0..len {
-            if i % 500 == 0 && i > 0 { // Increased step to 500 for better performance
-                if let Some(app) = app {
+                if let Some(ref app) = app {
                     let _ = app.emit(
                         &format!("zip-indexing-progress-{}", session_id),
                         ZipProgressPayload {
                             path: zip_path_str.clone(),
-                            progress: (i as f32 / len as f32) * 100.0,
+                            progress: 0.0,
                         },
                     );
                 }
-            }
-            let zip_file = archive.by_index(i).map_err(|e| e.to_string())?;
-            let name = zip_file.name();
-            let name_lower = name.to_lowercase();
-            let ext = Path::new(name)
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("zip")
-                .to_string();
-            
-            let is_main = name_lower.contains("-main");
-            let is_explicit_overlay = name_lower.contains("-overlay") || name_lower.contains("overlay");
-            let is_png = ext.eq_ignore_ascii_case("png");
-            let date = extract_date_prefix_from_name(name);
 
-            // Extract IDs from filename if possible - this is faster than id_appears_as_token scan
-            let ids_from_file = if is_explicit_overlay || is_png {
-                extract_ids_from_overlay_filename(name).unwrap_or_default()
-            } else {
-                extract_id_from_filename(name).map(|id| vec![id]).unwrap_or_default()
-            };
+                let file = std::fs::File::open(&zip_path)
+                    .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
+                let reader = std::io::BufReader::new(file);
+                let archive = zip::ZipArchive::new(reader)
+                    .map_err(|e| format!("Invalid zip {}: {}", zip_path.display(), e))?;
+                let len = archive.len();
 
-            // 1. Main Media Indexing
-            if !name_lower.contains("-overlay") {
-                for id in &ids_from_file {
-                    // Always index based on the case found in the filename (backward compatibility)
-                    let key_from_file = composite_key(date.as_deref(), id);
-                    if is_main || !main_index.contains_key(&key_from_file) {
-                        main_index.insert(key_from_file, (zip_file_idx, i, ext.clone()));
-                    }
-
-                    // If it matches a JSON ID, also index based on the JSON ID's case
-                    if let Some(original_id) = main_id_map.get(&id.to_lowercase()) {
-                        let key_from_json = composite_key(date.as_deref(), original_id);
-                        if is_main || !main_index.contains_key(&key_from_json) {
-                            main_index.insert(key_from_json, (zip_file_idx, i, ext.clone()));
+                let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
+                for (i, name) in names.into_iter().enumerate() {
+                    if i % 1000 == 0 && i > 0 {
+                        if let Some(ref app) = app {
+                            let _ = app.emit(
+                                &format!("zip-indexing-progress-{}", session_id),
+                                ZipProgressPayload {
+                                    path: zip_path_str.clone(),
+                                    progress: (i as f32 / len as f32) * 100.0,
+                                },
+                            );
                         }
                     }
-                }
-            }
+                    
+                    let name_lower = name.to_lowercase();
+                    let ext = Path::new(&name)
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("zip")
+                        .to_string();
+                    
+                    let is_main = name_lower.contains("-main");
+                    let is_explicit_overlay = name_lower.contains("-overlay") || name_lower.contains("overlay");
+                    let is_png = ext.eq_ignore_ascii_case("png");
+                    let date = extract_date_prefix_from_name(&name);
 
-            // 2. Overlay Indexing
-            if is_explicit_overlay || (is_png && !is_main) {
-                let mut matching_ids: HashSet<String> = HashSet::new();
-                for id in &ids_from_file {
-                    let id_lower = id.to_lowercase();
-                    if segment_to_primary.contains_key(&id_lower) {
-                        matching_ids.insert(id_lower);
-                    }
-                }
+                    let ids_from_file = if is_explicit_overlay || is_png {
+                        extract_ids_from_overlay_filename(&name).unwrap_or_default()
+                    } else {
+                        extract_id_from_filename(&name).map(|id| vec![id]).unwrap_or_default()
+                    };
 
-                if !matching_ids.is_empty() {
-                    let specificity = matching_ids.len();
-                    // Try to find a primary item that contains ALL matching IDs (split video logic)
-                    let best_ref = matching_ids.iter()
-                        .filter_map(|m| segment_to_primary.get(m))
-                        .find(|(_, item_ids)| matching_ids.iter().all(|m| item_ids.contains(m)));
-
-                    if let Some((item, _)) = best_ref {
-                        let key = composite_key(date.as_deref(), &item.id);
-                        let should_insert = overlay_temp.get(&key).map_or(true, |(_, _, _, s)| specificity > *s);
-                        if should_insert {
-                            overlay_temp.insert(key, (zip_file_idx, i, ext.clone(), specificity));
-                        }
-                    } else if let Some(first_match_id) = matching_ids.iter().next() {
-                         // Fallback to first matching 
-                         if let Some((item, _)) = segment_to_primary.get(first_match_id) {
-                            let key = composite_key(date.as_deref(), &item.id);
-                            let should_insert = overlay_temp.get(&key).map_or(true, |(_, _, _, s)| *s == 0 && specificity > 0);
-                            if should_insert {
-                                overlay_temp.insert(key, (zip_file_idx, i, ext.clone(), 0));
+                    if !name_lower.contains("-overlay") {
+                        for id in &ids_from_file {
+                            let key_from_file = composite_key(date.as_deref(), id);
+                            if is_main || !local_main.contains_key(&key_from_file) {
+                                local_main.insert(key_from_file, (zip_file_idx, i, ext.clone()));
                             }
-                         }
+
+                            if let Some(original_id) = main_id_map.get(&id.to_lowercase()) {
+                                let key_from_json = composite_key(date.as_deref(), original_id);
+                                if is_main || !local_main.contains_key(&key_from_json) {
+                                    local_main.insert(key_from_json, (zip_file_idx, i, ext.clone()));
+                                }
+                            }
+                        }
+                    }
+
+                    if is_explicit_overlay || (is_png && !is_main) {
+                        let mut matching_ids: HashSet<String> = HashSet::new();
+                        for id in &ids_from_file {
+                            let id_lower = id.to_lowercase();
+                            if segment_to_primary.contains_key(&id_lower) {
+                                matching_ids.insert(id_lower);
+                            }
+                        }
+
+                        if !matching_ids.is_empty() {
+                            let specificity = matching_ids.len();
+                            let best_ref = matching_ids.iter()
+                                .filter_map(|m| segment_to_primary.get(m))
+                                .find(|&(_, ref item_ids)| matching_ids.iter().all(|m| item_ids.contains(m)));
+
+                            if let Some((item, _)) = best_ref {
+                                let key = composite_key(date.as_deref(), &item.id);
+                                let should_insert = local_overlay.get(&key).map_or(true, |(_, _, _, s)| specificity > *s);
+                                if should_insert {
+                                    local_overlay.insert(key, (zip_file_idx, i, ext.clone(), specificity));
+                                }
+                            } else if let Some(first_match_id) = matching_ids.iter().next() {
+                                 if let Some((item, _)) = segment_to_primary.get(first_match_id) {
+                                    let key = composite_key(date.as_deref(), &item.id);
+                                    let should_insert = local_overlay.get(&key).map_or(true, |(_, _, _, s)| *s == 0 && specificity > 0);
+                                    if should_insert {
+                                        local_overlay.insert(key, (zip_file_idx, i, ext.clone(), 0));
+                                    }
+                                 }
+                            }
+                        }
                     }
                 }
+                if let Some(ref app) = app {
+                    let _ = app.emit(
+                        &format!("zip-indexing-progress-{}", session_id),
+                        ZipProgressPayload {
+                            path: zip_path_str.clone(),
+                            progress: 100.0,
+                        },
+                    );
+                }
+                tracing::info!(zip_path = %zip_path.display(), entries = len, elapsed_ms = zip_start.elapsed().as_millis(), "zip: indexed archive");
+                Ok((local_main, local_overlay))
+            }));
+        }
+
+        for handler in handlers {
+            if let Ok(Ok((local_main, local_ov))) = handler.join() {
+                main_index.extend(local_main);
+                overlay_temp.extend(local_ov);
             }
         }
-        if let Some(app) = app {
-            let _ = app.emit(
-                &format!("zip-indexing-progress-{}", session_id),
-                ZipProgressPayload {
-                    path: zip_path_str.clone(),
-                    progress: 100.0,
-                },
-            );
-        }
-        tracing::info!(
-            zip_path = %zip_path.display(),
-            entries = len,
-            elapsed_ms = zip_start.elapsed().as_millis(),
-            "zip: indexed archive"
-        );
-    }
+    });
 
     let overlay_index: HashMap<String, (usize, usize, String)> = overlay_temp
         .into_iter()
@@ -543,6 +548,7 @@ pub fn build_pipeline_zip_indexes(
     );
     Ok((main_index, overlay_index))
 }
+
 
 pub fn build_overlay_zip_index(
     zip_paths: &[PathBuf],
@@ -768,18 +774,19 @@ pub fn build_export_zip_index(
     zip_paths: &[PathBuf],
     item_ids: &[String],
 ) -> std::result::Result<HashMap<String, (usize, usize, String)>, String> {
+    use std::io::BufReader;
     let id_set: HashSet<&str> = item_ids.iter().map(|s| s.as_str()).collect();
     let mut index = HashMap::new();
 
     for (zip_file_idx, zip_path) in zip_paths.iter().enumerate() {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Invalid zip {}: {}", zip_path.display(), e))?;
+        let reader = BufReader::new(file);
+        let archive = zip::ZipArchive::new(reader).map_err(|e| format!("Invalid zip {}: {}", zip_path.display(), e))?;
 
-        for i in 0..archive.len() {
-            let zip_file = archive.by_index(i).map_err(|e| e.to_string())?;
-            let name = zip_file.name();
+        let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
+        for (i, name) in names.into_iter().enumerate() {
             let name_lower = name.to_lowercase();
-            let ext = Path::new(name)
+            let ext = Path::new(&name)
                 .extension()
                 .and_then(|s| s.to_str())
                 .unwrap_or("zip");

@@ -151,11 +151,14 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                 {
                     Some(r) => (r.0, r.1, r.2.clone()),
                     None => {
-                        // Fallback scan across all zips if not in index
+                        // Fallback scan across all zips if not in index. 
+                        // WARNING: This is O(N) where N is entries in ZIP.
                         let mut found = None;
                         for (z_idx, z_path) in export_paths.iter().enumerate() {
+                            tracing::warn!(id = %seg_id, zip = %z_path.display(), "acquire: item not in index, performing full fallback scan. This may be slow!");
                             let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
-                            let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                            let reader = std::io::BufReader::new(file);
+                            let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
                                 if let Some((e_idx, ext)) = scan_main_by_date_and_id(
                                 &mut archive,
                                 &clean_date,
@@ -173,8 +176,10 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                             if found.is_none() {
                                 // Last resort: date mismatch between JSON and ZIP filename; pick closest date match by ID.
                                 for (z_idx, z_path) in export_paths.iter().enumerate() {
+                                    tracing::warn!(id = %seg_id, zip = %z_path.display(), "acquire: date mismatch, performing best-match fallback scan.");
                                     let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
-                                    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                                    let reader = std::io::BufReader::new(file);
+                                    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
                                     if let Some((e_idx, ext)) =
                                         scan_main_by_best_date_match(&mut archive, target_epoch, seg_id)
                                     {
@@ -250,7 +255,9 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                     {
                         let mut archive_guard = archive_mutex.lock().map_err(|e| e.to_string())?;
                         let out_path = dest_dir.join(format!("{}-overlay.{}", id, ov_ext));
-                        let _ = extract_zip_entry_to_file(&mut archive_guard, ov_zip_entry_idx, &out_path);
+                        let mut zip_file = archive_guard.by_index(ov_zip_entry_idx).map_err(|e| e.to_string())?;
+                        let mut outfile = File::create(&out_path).map_err(|e| format!("Create file failed ({}): {}", out_path.display(), e))?;
+                        std::io::copy(&mut zip_file, &mut outfile).map_err(|e| e.to_string())?;
                     }
                 }
             }
@@ -291,7 +298,7 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
 }
 
 fn extract_zip_entry_to_file(
-    archive: &mut ZipArchive<File>,
+    archive: &mut ZipArchive<std::io::BufReader<File>>,
     entry_idx: usize,
     out_path: &Path,
 ) -> std::result::Result<(), String> {
