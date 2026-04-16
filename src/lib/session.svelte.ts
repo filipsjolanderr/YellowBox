@@ -1,6 +1,7 @@
 import { tweened } from "svelte/motion";
 import { cubicOut } from "svelte/easing";
 import type { ParsedMemory } from "$lib/parser";
+import { SvelteMap } from "svelte/reactivity";
 
 export class Session {
     id: string;
@@ -15,8 +16,11 @@ export class Session {
     activeParsingTasks = $state(0);
     isParsing = $derived(this.activeParsingTasks > 0);
     isInitializingDb = $state(false);
-    zipProgress: Record<string, number> = $state({});
-    zipValidity: Record<string, "checking" | "valid" | "invalid"> = $state({});
+    zipProgress = new SvelteMap<string, number>();
+    zipValidity = new SvelteMap<string, "checking" | "valid" | "invalid">();
+    // Tracks which memory IDs were produced by which ZIP for pre-flight preview.
+    // (Populated during ZIP indexing on the frontend; used only for UI summary.)
+    memoryIdsByZip = new SvelteMap<string, string[]>();
     parsingProgress = tweened(0, { duration: 400, easing: cubicOut });
     statusMessage = $state("");
     hasAttemptedLoad = $state(false);
@@ -34,6 +38,8 @@ export class Session {
     totalCount = $derived(this.memories.length > 0 ? this.memories.length : this.parsedItems.length);
     progressPercentage = $derived(this.totalCount > 0 ? (this.completedCount / this.totalCount) * 100 : 0);
     isAllProcessed = $derived(this.memories.length > 0 && this.completedCount + this.failedCount === this.memories.length);
+    hasResumeableWork = $derived(this.memories.length > 0 && !this.isAllProcessed && this.pendingCount < this.memories.length);
+    remainingCount = $derived(this.memories.length > 0 ? this.memories.length - (this.completedCount + this.failedCount) : 0);
 
     constructor(id: string, name: string) {
         this.id = id;

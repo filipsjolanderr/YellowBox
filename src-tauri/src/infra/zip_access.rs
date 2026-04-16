@@ -33,7 +33,7 @@ impl ZipAccess {
 
         let file = File::open(zip_path)
             .map_err(|e| AppError::Message(format!("Open ZIP failed ({}): {}", zip_path.display(), e)))?;
-        let reader = BufReader::new(file);
+        let reader = BufReader::with_capacity(256 * 1024, file);
         let archive =
             ZipArchive::new(reader).map_err(|e| AppError::Message(format!("Invalid ZIP: {}", e)))?;
         let a = Arc::new(Mutex::new(archive));

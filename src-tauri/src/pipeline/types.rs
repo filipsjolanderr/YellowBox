@@ -3,11 +3,20 @@ use crate::infra::event_emitter::EventEmitter;
 use crate::infra::zip_access::ZipAccess;
 use crate::models::MemoryItem;
 use crate::pipeline::update_sink::UpdateSink;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tauri::AppHandle;
+
+/// Typed payload for `pipeline-status-<session_id>` events emitted to the frontend.
+/// Using a struct (rather than a raw String) allows the frontend to pattern-match
+/// on a consistent JSON shape: `{ message: "..." }`.
+#[derive(Serialize, Clone)]
+pub struct PipelineStatusPayload {
+    pub message: String,
+}
 
 /// Message passed between pipeline stages. Each stage populates the relevant fields.
 pub struct PipelineMessage {

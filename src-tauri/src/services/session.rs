@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::AtomicBool,
     Arc,
-    Mutex,
 };
+use tokio::sync::RwLock;
 use tauri::{AppHandle, State, Manager};
 use tracing::info;
 
@@ -47,7 +47,7 @@ pub fn apply_export_paths(session: &mut SessionState, new_paths: Vec<PathBuf>) -
 }
 
 pub struct AppState {
-    pub sessions: Mutex<HashMap<String, SessionState>>,
+    pub sessions: RwLock<HashMap<String, SessionState>>,
 }
 
 pub struct SessionService;
@@ -57,7 +57,7 @@ impl SessionService {
         session_id: String,
         path: String,
         state: State<'_, AppState>,
-    ) -> Result<Option<String>> {
+    ) -> Result<Vec<MemoryItem>> {
         info!(session_id = %session_id, path = %path, "check_zip_structure");
         let path_buf = PathBuf::from(&path);
         let path_clone = path_buf.clone();
@@ -70,29 +70,37 @@ impl SessionService {
 
         let (json_content, _mem_dir) = content;
 
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state.sessions.write().await;
         let session = sessions
             .entry(session_id.clone())
             .or_insert_with(SessionState::new);
+
         if !session.export_paths.contains(&path_buf) {
             let mut next = session.export_paths.clone();
             next.push(path_buf);
             apply_export_paths(session, next);
         }
-        info!(session_id = %session_id, "zip structure validated");
-        Ok(json_content)
+
+        let items = if let Some(content) = json_content {
+            crate::parser::parse_memories_json(&content)
+        } else {
+            Vec::new()
+        };
+
+        info!(session_id = %session_id, items_count = items.len(), "zip structure validated");
+        Ok(items)
     }
 
     /// Replace the ZIP list for the session.
     /// This is the source of truth for what archives the pipeline may read.
-    pub fn set_export_paths(
+    pub async fn set_export_paths(
         session_id: String,
         paths: Vec<String>,
         state: State<'_, AppState>,
     ) -> Result<()> {
         let new_paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
 
-        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        let mut sessions = state.sessions.write().await;
         let session = sessions
             .entry(session_id.clone())
             .or_insert_with(SessionState::new);
@@ -140,7 +148,7 @@ impl SessionService {
         let memories = db_manager.get_all_memories().await?;
         let db_arc = Arc::new(db_manager);
 
-        let mut sessions = state.sessions.lock().unwrap();
+        let mut sessions = state.sessions.write().await;
         let session = sessions
             .entry(session_id.clone())
             .or_insert_with(SessionState::new);
@@ -159,7 +167,7 @@ impl SessionService {
         state: State<'_, AppState>,
     ) -> Result<Vec<MemoryItem>> {
         let db_clone = {
-            let sessions = state.sessions.lock().unwrap();
+            let sessions = state.sessions.read().await;
             sessions
                 .get(&session_id)
                 .and_then(|session| session.db.clone())
@@ -172,39 +180,73 @@ impl SessionService {
         Err("Database not initialized yet for this session".into())
     }
 
-    pub fn reset_application(session_id: String, state: State<'_, AppState>) -> Result<()> {
-        let mut sessions = state.sessions.lock().unwrap();
+    pub async fn reset_application(session_id: String, state: State<'_, AppState>) -> Result<()> {
+        let mut sessions = state.sessions.write().await;
         let _ = sessions.remove(&session_id);
         Ok(())
     }
 
-    pub fn cleanup_database(
+    pub async fn cleanup_database(
         session_id: String,
         app: AppHandle,
         state: State<'_, AppState>,
     ) -> Result<()> {
-        let mut sessions = state.sessions.lock().unwrap();
-        if let Some(mut session) = sessions.remove(&session_id) {
-            session.db = None;
+        let mut sessions = state.sessions.write().await;
+        if let Some(session) = sessions.remove(&session_id) {
+            session.is_cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
 
             if let Ok(app_data_dir) = app.path().app_data_dir() {
                 let db_path = app_data_dir
                     .join("sessions")
                     .join(format!("{}.db", session_id));
-                if db_path.exists() {
-                    let _ = std::fs::remove_file(db_path);
+                
+                // wait for arc to drop and sqlite to release lock
+                for _ in 0..20 {
+                    if !db_path.exists() || std::fs::remove_file(&db_path).is_ok() {
+                        // Also try to delete WAL and SHM files
+                        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+                        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
         Ok(())
     }
 
-    pub fn resolve_local_media_paths(
+    pub async fn clear_all_data(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+        let mut sessions = state.sessions.write().await;
+        // Cancel all tasks so they release their Arc<DbManager>
+        for session in sessions.values() {
+            session.is_cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        // Clear in-memory state
+        sessions.clear();
+
+        // Delete all database files
+        if let Ok(app_data_dir) = app.path().app_data_dir() {
+            let sessions_dir = app_data_dir.join("sessions");
+            if sessions_dir.exists() {
+                // Retry deleting since pipeline tasks might take a few moments to exit and release file locks
+                for _ in 0..20 {
+                    if std::fs::remove_dir_all(&sessions_dir).is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                let _ = std::fs::create_dir_all(&sessions_dir);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn resolve_local_media_paths(
         session_id: String,
         memory_ids: Vec<String>,
         state: State<'_, AppState>,
     ) -> Result<std::collections::HashMap<String, String>> {
-        let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        let sessions = state.sessions.read().await;
         let session = sessions
             .get(&session_id)
             .ok_or_else(|| "Session not found".to_string())?;
@@ -241,7 +283,7 @@ impl SessionService {
         state: State<'_, AppState>,
     ) -> Result<()> {
         let db = {
-            let sessions = state.sessions.lock().unwrap();
+            let sessions = state.sessions.read().await;
             let session = sessions
                 .get(&session_id)
                 .ok_or_else(|| "Session not found".to_string())?;
@@ -255,4 +297,3 @@ impl SessionService {
         Ok(())
     }
 }
-

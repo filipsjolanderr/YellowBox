@@ -4,6 +4,7 @@ use crate::infra::event_emitter::EventEmitter;
 use crate::infra::zip_access::ZipAccess;
 use crate::models::ProcessingState;
 use crate::pipeline::{OverlayItemRef, PipelineService};
+use crate::pipeline::PipelineStatusPayload;
 use crate::services::session::AppState;
 use std::path::PathBuf;
 use std::sync::{atomic::Ordering, Arc};
@@ -22,7 +23,7 @@ impl PipelineOrchestrator {
         state: State<'_, AppState>,
     ) -> Result<()> {
         let (dest_dir, db, cancel_token, export_paths, cached_main_idx, cached_overlay_idx) = {
-            let mut sessions = state.sessions.lock().unwrap();
+            let mut sessions = state.sessions.write().await;
             let session = sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| "Session not found".to_string())?;
@@ -105,7 +106,10 @@ impl PipelineOrchestrator {
             let mut export_zip_index = cached_main_idx;
             let mut export_overlay_index = cached_overlay_idx;
             if export_zip_index.is_none() && export_overlay_index.is_none() && !export_paths.is_empty() {
-                let _ = app.emit(&format!("pipeline-status-{}", session_id), "Indexing source archives...");
+                let _ = app.emit(
+                    &format!("pipeline-status-{}", session_id),
+                    PipelineStatusPayload { message: "Indexing source archives...".into() },
+                );
 
                 let main_ids: Vec<String> = items_to_process
                     .iter()
@@ -121,6 +125,7 @@ impl PipelineOrchestrator {
                     .map(|i| OverlayItemRef {
                         id: i.id.clone(),
                         segment_ids: i.segment_ids.clone(),
+                        candidate_ids: i.candidate_ids.clone(),
                     })
                     .collect();
                 let export_paths_clone = export_paths.clone();
@@ -152,31 +157,37 @@ impl PipelineOrchestrator {
 
                         // Cache for future resumes within this session.
                         let app_state = app.state::<AppState>();
-                        let mut sessions = app_state.sessions.lock().unwrap();
+                        let mut sessions = app_state.sessions.write().await;
                         if let Some(session) = sessions.get_mut(&session_id) {
                             session.main_index = export_zip_index.clone();
                             session.overlay_index = export_overlay_index.clone();
                         }
 
-                        let _ = app.emit(&format!("pipeline-status-{}", session_id), "Indexing complete.");
+                        let _ = app.emit(
+                            &format!("pipeline-status-{}", session_id),
+                            PipelineStatusPayload { message: "Indexing complete.".into() },
+                        );
                     }
                     Ok(Err(e)) => {
                         let _ = app.emit(
                             &format!("pipeline-status-{}", session_id),
-                            format!("Indexing failed: {}", e),
+                            PipelineStatusPayload { message: format!("Indexing failed: {}", e) },
                         );
                         // Proceed without indexes; pipeline can still attempt CDN for missing items.
                     }
                     Err(e) => {
                         let _ = app.emit(
                             &format!("pipeline-status-{}", session_id),
-                            format!("Indexing task failed: {}", e),
+                            PipelineStatusPayload { message: format!("Indexing task failed: {}", e) },
                         );
                     }
                 }
             }
 
-            let _ = app.emit(&format!("pipeline-status-{}", session_id), "Processing your memories...");
+            let _ = app.emit(
+                &format!("pipeline-status-{}", session_id),
+                PipelineStatusPayload { message: "Processing your memories...".into() },
+            );
 
             let zip_access = ZipAccess::new();
             let emitter = EventEmitter::new(app.clone(), session_id.clone());
@@ -226,7 +237,7 @@ impl PipelineOrchestrator {
 
     pub async fn pause_pipeline(session_id: String, state: State<'_, AppState>) -> Result<()> {
         let db = {
-            let sessions = state.sessions.lock().unwrap();
+            let sessions = state.sessions.read().await;
             if let Some(session) = sessions.get(&session_id) {
                 session.is_cancelled.store(true, Ordering::SeqCst);
                 session.db.clone()

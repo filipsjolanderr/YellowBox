@@ -6,29 +6,24 @@ use crate::metadata;
 use crate::models::ProcessingState;
 use crate::pipeline::types::{PipelineContext, PipelineMessage};
 use crate::pipeline::zip::is_video_ext;
-use std::path::Path;
 use tracing::info;
 
-/// Removes all intermediate files (raw, main, overlay, seg) for this memory when done.
-async fn remove_intermediate_files(dest_dir: &Path, id: &str) {
-    let prefixes = [
-        format!("{}-raw.", id),
-        format!("{}-main.", id),
-        format!("{}-overlay.", id),
-        format!("{}-seg", id),
-    ];
-    if let Ok(mut entries) = tokio::fs::read_dir(dest_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            if let Some(name) = entry.file_name().to_str() {
-                let name_lower = name.to_lowercase();
-                if prefixes.iter().any(|p| name_lower.starts_with(&p.to_lowercase())) {
-                    let path = entry.path();
-                    if path.is_file() {
-                        let _ = tokio::fs::remove_file(&path).await;
-                        info!(id = %id, file = %name, "metadata: removed intermediate file");
-                    }
-                }
-            }
+/// Removes the intermediate files for this pipeline item using the concrete paths
+/// already known to the pipeline. Avoids scanning the entire output directory.
+async fn cleanup_intermediate_files(msg: &PipelineMessage) {
+    // raw file (CDN download or source-ZIP extracted segment)
+    if let Some(p) = &msg.raw_path {
+        if !p.as_os_str().is_empty() {
+            let _ = tokio::fs::remove_file(p).await;
+            info!(file = %p.display(), "metadata: removed intermediate file");
+        }
+    }
+    // extracted main and optional overlay
+    if let Some((main, overlay)) = &msg.extracted_files {
+        // main may equal raw_path (non-zip source) — remove_file is idempotent on ENOENT
+        let _ = tokio::fs::remove_file(main).await;
+        if let Some(ov) = overlay {
+            let _ = tokio::fs::remove_file(ov).await;
         }
     }
 }
@@ -61,7 +56,7 @@ pub(crate) async fn do_metadata_step<R: MemoryRepository>(
             .await
             .map_err(|e| crate::error::AppError::Metadata(e.to_string()))?;
 
-        remove_intermediate_files(&ctx.dest_dir, &msg.item.id).await;
+        cleanup_intermediate_files(msg).await;
         info!(id = %msg.item.id, "metadata: done (GPS, timestamps, cleanup)");
     } else {
         info!(id = %msg.item.id, "metadata: skipped (state not Composited)");

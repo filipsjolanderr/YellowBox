@@ -37,6 +37,7 @@ pub use zip::{
     is_video_ext,
     OverlayItemRef,
 };
+pub use types::PipelineStatusPayload;
 
 pub struct PipelineService<R: MemoryRepository> {
     pub db: Arc<R>,

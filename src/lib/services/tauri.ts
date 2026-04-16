@@ -7,8 +7,12 @@ export const tauriService = {
         await invoke("cleanup_database", { sessionId });
     },
 
-    async checkZipStructure(sessionId: string, path: string): Promise<string | null> {
-        return await invoke<string | null>("check_zip_structure", { sessionId, path });
+    async clearAllData(): Promise<void> {
+        await invoke("clear_all_data");
+    },
+
+    async checkZipStructure(sessionId: string, path: string): Promise<ParsedMemory[]> {
+        return await invoke<ParsedMemory[]>("check_zip_structure", { sessionId, path });
     },
 
     async setExportPaths(sessionId: string, paths: string[]): Promise<void> {
@@ -48,8 +52,8 @@ export const tauriService = {
         return await invoke<boolean>("check_overlay_exists", {
             outputDir,
             memoryId,
-            cleanDate,
-        });
+            session_id: "global", // fallback for stateless call
+        } as any);
     },
 
     async retryItem(sessionId: string, itemId: string): Promise<void> {
@@ -67,8 +71,8 @@ export const tauriService = {
     },
 
     async listenForPipelineStatus(sessionId: string, callback: (status: string) => void): Promise<UnlistenFn> {
-        return await listen<string>(`pipeline-status-${sessionId}`, (event) => {
-            callback(event.payload);
+        return await listen<{ message: string }>(`pipeline-status-${sessionId}`, (event) => {
+            callback(event.payload.message);
         });
     },
 

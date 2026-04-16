@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tracing::warn;
 
 const MAX_RETRIES: u32 = 5;
 
@@ -98,7 +99,7 @@ pub async fn download_memory(
                     } else {
                         Duration::from_secs(2u64.pow(attempt) + 1)
                     };
-                    
+                    warn!(id = %item.id, attempt, %status, delay_secs = delay.as_secs(), "download: retrying after HTTP error");
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -107,6 +108,7 @@ pub async fn download_memory(
                     return Err(format!("Request failed after {} attempts: {}", MAX_RETRIES, e));
                 }
                 let delay = Duration::from_secs(2u64.pow(attempt) + 1);
+                warn!(id = %item.id, attempt, error = %e, delay_secs = delay.as_secs(), "download: retrying after request error");
                 tokio::time::sleep(delay).await;
             }
         }

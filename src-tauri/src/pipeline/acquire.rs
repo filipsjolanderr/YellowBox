@@ -7,7 +7,7 @@ use crate::downloader;
 use crate::error::Result;
 use crate::metadata;
 use crate::models::{ProcessingState};
-use crate::pipeline::types::{PipelineContext, PipelineMessage};
+use crate::pipeline::types::{PipelineContext, PipelineMessage, PipelineStatusPayload};
 use crate::pipeline::zip::{
     extract_id_from_filename,
     find_raw_file_fast,
@@ -50,19 +50,16 @@ pub(crate) async fn do_acquire_step<R: MemoryRepository>(
                 .acquire()
                 .await
                 .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
-            match try_extract_from_source_zip(ctx, &msg.item).await {
-                Ok(found_path) => {
-                    info!(id = %msg.item.id, path = %found_path.display(), "acquire: extracted from source ZIP");
-                    msg.raw_path = Some(found_path);
-                    return Ok(());
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
+            let found_path = try_extract_from_source_zip(ctx, &msg.item).await?;
+            info!(id = %msg.item.id, path = %found_path.display(), "acquire: extracted from source ZIP");
+            msg.raw_path = Some(found_path);
+            return Ok(());
         }
         info!(id = %msg.item.id, "acquire: downloading from CDN");
-        let _ = ctx.app.emit(&format!("pipeline-status-{}", ctx.session_id), format!("Downloading {} from CDN...", msg.item.id));
+        let _ = ctx.app.emit(
+            &format!("pipeline-status-{}", ctx.session_id),
+            PipelineStatusPayload { message: format!("Downloading {} from CDN...", msg.item.id) },
+        );
         let _permit = ctx
             .download_sem
             .acquire()
@@ -125,6 +122,7 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
     let id = item.id.clone();
     let id_for_final = id.clone();
 
+    let candidate_ids = item.candidate_ids.clone();
     let export_paths = ctx.export_paths.clone();
     let segment_paths = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<PathBuf>, String> {
         let mut paths = Vec::new();
@@ -132,6 +130,8 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
 
         if let Some(ref idx) = main_index {
             info!(dest_dir = %dest_dir.display(), segment_count = segment_ids.len(), "acquire: starting extraction from ZIP pool");
+            let mut extracted_entries = std::collections::HashSet::new();
+            
             for (i, seg_id) in segment_ids.iter().enumerate() {
                 let key_exact = format!("{}|{}", clean_date, seg_id);
                 let key_date_only = if clean_date.len() >= 10 {
@@ -144,50 +144,53 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                 } else {
                     None
                 };
-                let (zip_file_idx, zip_entry_idx, ext) = match idx
-                    .get(&key_exact)
+                
+                let found = idx.get(&key_exact)
                     .or_else(|| key_date_only.as_ref().and_then(|k| idx.get(k)))
-                    .or_else(|| key_fallback.as_ref().and_then(|k| idx.get(k)))
-                {
-                    Some(r) => (r.0, r.1, r.2.clone()),
+                    .or_else(|| key_fallback.as_ref().and_then(|k| idx.get(k)));
+
+                let (zip_file_idx, zip_entry_idx, ext) = match found {
+                    Some(r) => {
+                        // Check if we already extracted this specific file entry for this memory
+                        if !extracted_entries.insert((r.0, r.1)) {
+                            tracing::debug!(id = %seg_id, "acquire: skipping aliased ID (already extracted this entry)");
+                            continue;
+                        }
+                        (r.0, r.1, r.2.clone())
+                    },
                     None => {
-                        // Fallback scan across all zips if not in index. 
+                        // Fallback scan across all zips if not in index.
                         // WARNING: This is O(N) where N is entries in ZIP.
+                        // Reuses the ZipAccess cache to avoid re-opening files.
                         let mut found = None;
                         for (z_idx, z_path) in export_paths.iter().enumerate() {
                             tracing::warn!(id = %seg_id, zip = %z_path.display(), "acquire: item not in index, performing full fallback scan. This may be slow!");
-                            let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
-                            let reader = std::io::BufReader::new(file);
-                            let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-                                if let Some((e_idx, ext)) = scan_main_by_date_and_id(
-                                &mut archive,
+                            let archive_mutex = zip_access.get_or_open(z_path).map_err(|e| e.to_string())?;
+                            let mut archive_guard = archive_mutex.lock().map_err(|e| e.to_string())?;
+                            if let Some((e_idx, ext)) = scan_main_by_date_and_id(
+                                &mut archive_guard,
                                 &clean_date,
-                                if clean_date.len() >= 10 {
-                                    Some(&clean_date[..10])
-                                } else {
-                                    None
-                                },
+                                if clean_date.len() >= 10 { Some(&clean_date[..10]) } else { None },
                                 seg_id,
                             ) {
                                 found = Some((z_idx, e_idx, ext));
                                 break;
                             }
                         }
-                            if found.is_none() {
-                                // Last resort: date mismatch between JSON and ZIP filename; pick closest date match by ID.
-                                for (z_idx, z_path) in export_paths.iter().enumerate() {
-                                    tracing::warn!(id = %seg_id, zip = %z_path.display(), "acquire: date mismatch, performing best-match fallback scan.");
-                                    let file = std::fs::File::open(z_path).map_err(|e| e.to_string())?;
-                                    let reader = std::io::BufReader::new(file);
-                                    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
-                                    if let Some((e_idx, ext)) =
-                                        scan_main_by_best_date_match(&mut archive, target_epoch, seg_id)
-                                    {
-                                        found = Some((z_idx, e_idx, ext));
-                                        break;
-                                    }
+                        if found.is_none() {
+                            // Last resort: date mismatch between JSON and ZIP filename; pick closest date match by ID.
+                            for (z_idx, z_path) in export_paths.iter().enumerate() {
+                                tracing::warn!(id = %seg_id, zip = %z_path.display(), "acquire: date mismatch, performing best-match fallback scan.");
+                                let archive_mutex = zip_access.get_or_open(z_path).map_err(|e| e.to_string())?;
+                                let mut archive_guard = archive_mutex.lock().map_err(|e| e.to_string())?;
+                                if let Some((e_idx, ext)) =
+                                    scan_main_by_best_date_match(&mut archive_guard, target_epoch, seg_id)
+                                {
+                                    found = Some((z_idx, e_idx, ext));
+                                    break;
                                 }
                             }
+                        }
                         found.ok_or_else(|| {
                             format!(
                                 "Segment {} not in ZIP index and scan found no match",
@@ -212,9 +215,27 @@ pub(crate) async fn try_extract_from_source_zip<R: MemoryRepository>(
                         zip_file.name().to_string()
                     };
                     
-                    if !id_appears_as_token(&entry_name, seg_id) {
+                    let mut is_valid = id_appears_as_token(&entry_name, seg_id);
+                    if !is_valid {
+                        if let Some(ref candidates) = candidate_ids {
+                            for cand in candidates {
+                                if id_appears_as_token(&entry_name, cand) {
+                                    is_valid = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if !is_valid {
+                        info!(
+                            id = %seg_id, 
+                            entry = %entry_name, 
+                            aliases = ?candidate_ids, 
+                            "acquire: safety check failed - ID mismatch"
+                        );
                         return Err(format!(
-                            "ZIP entry {} does not contain segment id {} - wrong file would overwrite",
+                            "ZIP entry {} does not contain segment id {} or any alias - wrong file would overwrite",
                             entry_name, seg_id
                         ));
                     }

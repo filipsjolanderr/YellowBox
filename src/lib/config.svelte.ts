@@ -3,6 +3,7 @@ export class AppConfig {
     maxConcurrency = $state<number | null>(null);
     lastZips = $state<string[]>([]);
     lastOutput = $state<string | null>(null);
+    lastSessionId = $state<string | null>(null);
 
     constructor() {
         if (typeof window !== "undefined") {
@@ -14,6 +15,7 @@ export class AppConfig {
                     this.maxConcurrency = parsed.maxConcurrency ?? null;
                     this.lastZips = parsed.lastZips ?? (parsed.lastZip ? [parsed.lastZip] : []);
                     this.lastOutput = parsed.lastOutput ?? null;
+                    this.lastSessionId = parsed.lastSessionId ?? null;
                 } catch (e) { }
             }
         }
@@ -25,7 +27,8 @@ export class AppConfig {
                 overwriteExisting: this.overwriteExisting,
                 maxConcurrency: this.maxConcurrency,
                 lastZips: this.lastZips,
-                lastOutput: this.lastOutput
+                lastOutput: this.lastOutput,
+                lastSessionId: this.lastSessionId,
             }));
         }
     }

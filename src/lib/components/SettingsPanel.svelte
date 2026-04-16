@@ -14,6 +14,8 @@
     import { Input } from "$lib/components/ui/input";
     import { Settings } from "lucide-svelte";
     import { appConfig } from "$lib/config.svelte";
+    import { ask } from "@tauri-apps/plugin-dialog";
+    import { tauriService } from "$lib/services/tauri";
 
     import * as Tooltip from "$lib/components/ui/tooltip";
 
@@ -28,7 +30,7 @@
 
     function handleSave() {
         const parsed = maxConcurrencyInput.trim() ? parseInt(maxConcurrencyInput, 10) : null;
-        appConfig.maxConcurrency = parsed != null && parsed >= 1 && parsed <= 32 ? parsed : null;
+        appConfig.maxConcurrency = parsed != null && parsed >= 1 && parsed <= 128 ? parsed : null;
         appConfig.save();
         open = false;
     }
@@ -36,6 +38,28 @@
     function handleReset() {
         appConfig.resetPrefs();
         maxConcurrencyInput = "";
+    }
+
+    async function handleHardReset() {
+        const confirmed = await ask(
+            "This will permanently delete ALL local session databases and clear your current work. You will need to re-index your ZIPs. Continue?",
+            { title: "Hard Reset", kind: "warning" }
+        );
+        
+        if (confirmed) {
+            try {
+                // Also clear the saved paths in localStorage so they don't auto-load
+                appConfig.lastZips = [];
+                appConfig.lastOutput = null;
+                appConfig.lastSessionId = null;
+                appConfig.save();
+
+                await tauriService.clearAllData();
+                location.reload();
+            } catch (err) {
+                console.error("Hard reset failed:", err);
+            }
+        }
     }
 </script>
 
@@ -102,6 +126,28 @@
                     Limit parallel processing. Leave empty for auto (CPU cores).
                     Lower values help with rate limits or disk I/O.
                 </p>
+            </div>
+
+            <div class="flex flex-col gap-2 pt-4 border-t border-border/50">
+                <Label class="text-sm font-bold text-destructive"
+                    >Danger Zone</Label
+                >
+                <div class="flex items-center justify-between gap-4">
+                    <div class="flex flex-col space-y-1">
+                        <p class="text-[11px] text-muted-foreground">
+                            Clears all local databases and indexed metadata.
+                            Use this if you need to force a full re-import.
+                        </p>
+                    </div>
+                    <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onclick={handleHardReset}
+                        class="text-destructive hover:bg-destructive/10 hover:text-destructive whitespace-nowrap shrink-0"
+                    >
+                        Reset All Data
+                    </Button>
+                </div>
             </div>
         </div>
         <DialogFooter>

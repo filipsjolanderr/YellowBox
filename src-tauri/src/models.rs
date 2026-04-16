@@ -41,6 +41,10 @@ pub struct MemoryItem {
     /// For split videos: segment IDs in playback order. Empty/None for single-segment.
     #[serde(default)]
     pub segment_ids: Option<Vec<String>>,
+    /// All possible IDs for this memory (includes SIDs, MIDs, aliases).
+    /// Used by the ZIP indexer to resolve filenames that use non-primary IDs.
+    #[serde(default)]
+    pub candidate_ids: Option<Vec<String>>,
     pub download_url: String,
     pub original_date: String,
     pub location: Option<String>,

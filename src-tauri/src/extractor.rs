@@ -34,7 +34,8 @@ pub async fn extract_memory(
         }
 
         let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let reader = std::io::BufReader::with_capacity(256 * 1024, file);
+        let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
 
         let mut main_file = None;
         let mut overlay_file = None;

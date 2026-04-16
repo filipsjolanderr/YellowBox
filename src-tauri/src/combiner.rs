@@ -1,5 +1,5 @@
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
@@ -19,22 +19,33 @@ pub async fn combine_image(
         // Try reading overlay dynamically avoiding strict PNG assertions causing crashes
         match image::ImageReader::open(&overlay_path) {
             Ok(reader) => {
-                let formatted = reader.with_guessed_format().unwrap_or_else(|e| {
-                    eprintln!("Warning: Format guess error: {}", e);
-                    image::ImageReader::open(&overlay_path).unwrap() // Attempt unformatted fallback if guessing fails
-                });
-
-                match formatted.decode() {
-                    Ok(overlay_img) => {
-                        image::imageops::overlay(&mut main_img, &overlay_img, 0, 0);
-                    }
+                let formatted = match reader.with_guessed_format() {
+                    Ok(f) => Some(f),
                     Err(e) => {
-                        eprintln!("Warning: Skipping overlay due to decode error: {}", e);
+                        warn!(error = %e, "combine_image: format guess failed, retrying without guess");
+                        match image::ImageReader::open(&overlay_path) {
+                            Ok(r) => Some(r),
+                            Err(e2) => {
+                                warn!(error = %e2, "combine_image: fallback open failed, skipping overlay");
+                                None
+                            }
+                        }
+                    }
+                };
+
+                if let Some(formatted) = formatted {
+                    match formatted.decode() {
+                        Ok(overlay_img) => {
+                            image::imageops::overlay(&mut main_img, &overlay_img, 0, 0);
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "combine_image: overlay decode failed, skipping overlay");
+                        }
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Warning: Skipping overlay due to open error: {}", e);
+                warn!(error = %e, "combine_image: overlay open failed, skipping overlay");
             }
         }
 
@@ -43,15 +54,6 @@ pub async fn combine_image(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-fn ffmpeg_path_arg(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    if s.contains(' ') || s.contains('"') {
-        format!("\"{}\"", s.replace('"', "\\\""))
-    } else {
-        s.into_owned()
-    }
 }
 
 pub async fn combine_video(
@@ -66,19 +68,21 @@ pub async fn combine_video(
             overlay_path.display()
         ));
     }
-    let main_arg = ffmpeg_path_arg(main_path);
-    let overlay_arg = ffmpeg_path_arg(overlay_path);
-    let dest_arg = ffmpeg_path_arg(dest_path);
 
-    let command = app
+    // NOTE: Tauri sidecar .args() is NOT shell-interpreted — paths must NOT be shell-quoted.
+    let main_str = main_path.to_string_lossy().into_owned();
+    let overlay_str = overlay_path.to_string_lossy().into_owned();
+    let dest_str = dest_path.to_string_lossy().into_owned();
+
+    let output = app
         .shell()
         .sidecar("ffmpeg")
         .map_err(|e| e.to_string())?
         .args([
             "-i",
-            &main_arg,
+            &main_str,
             "-i",
-            &overlay_arg,
+            &overlay_str,
             "-filter_complex",
             "[1:v][0:v]scale2ref[ov][main];[main][ov]overlay=0:0",
             "-c:v",
@@ -88,10 +92,11 @@ pub async fn combine_video(
             "-c:a",
             "copy",
             "-y",
-            &dest_arg,
-        ]);
-
-    let output = command.output().await.map_err(|e| e.to_string())?;
+            &dest_str,
+        ])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
 
     if output.status.success() {
         info!(dest = %dest_path.display(), "combined video with overlay");

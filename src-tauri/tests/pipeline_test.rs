@@ -21,6 +21,7 @@ async fn test_end_to_end_extraction_pipeline() {
     let memory_item = MemoryItem {
         segment_ids: None,
         id: memory_id.clone(),
+        candidate_ids: None,
         download_url: "http://example.com/mem.zip".to_string(),
         original_date: "2024-05-15 10:15:30 UTC".to_string(),
         location: Some("40.7128, -74.0060".to_string()),

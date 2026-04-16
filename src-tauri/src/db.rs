@@ -40,7 +40,7 @@ impl DbManager {
                 "PRAGMA journal_mode = WAL;
                  PRAGMA synchronous = NORMAL;",
             )
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
         
         Self::create_schema(&conn).await?;
         Ok(DbManager { conn })
@@ -65,10 +65,14 @@ impl DbManager {
                 )",
                 [],
             )
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
         // Migration: add segment_ids if missing (ignore if already exists)
         let _ = conn
             .call(|c| c.execute("ALTER TABLE memories ADD COLUMN segment_ids TEXT", []))
+            .await;
+        // Migration: add candidate_ids if missing
+        let _ = conn
+            .call(|c| c.execute("ALTER TABLE memories ADD COLUMN candidate_ids TEXT", []))
             .await;
         Ok(())
     }
@@ -82,10 +86,15 @@ impl MemoryRepository for DbManager {
             .as_ref()
             .and_then(|s| serde_json::to_string(s).ok());
 
+        let candidate_ids_json = cloned_item
+            .candidate_ids
+            .as_ref()
+            .and_then(|s| serde_json::to_string(s).ok());
+
         self.conn.call(move |conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids, candidate_ids)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 rusqlite::params![
                     cloned_item.id,
                     cloned_item.download_url,
@@ -97,41 +106,37 @@ impl MemoryRepository for DbManager {
                     cloned_item.has_overlay as i32,
                     cloned_item.has_thumbnail as i32,
                     cloned_item.media_type,
-                    segment_ids_json
+                    segment_ids_json,
+                    candidate_ids_json
                 ],
             )
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
         Ok(())
     }
 
     async fn bulk_insert_memories(&self, items: Vec<MemoryItem>) -> Result<()> {
         self.conn.call(move |conn| {
-            let tx = conn.transaction()?;
-            {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
-                )?;
-                for item in items {
-                    let segment_ids_json = item.segment_ids.as_ref().and_then(|s| serde_json::to_string(s).ok());
-                    stmt.execute(rusqlite::params![
-                        item.id,
-                        item.download_url,
-                        item.original_date,
-                        item.location,
-                        item.state.as_ref(),
-                        item.error_message,
-                        item.extension,
-                        item.has_overlay as i32,
-                        item.has_thumbnail as i32,
-                        item.media_type,
-                        segment_ids_json
-                    ])?;
-                }
+            let mut stmt = conn.prepare("INSERT OR IGNORE INTO memories (id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids, candidate_ids) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")?;
+            for item in items {
+                let segment_ids_json = item.segment_ids.as_ref().and_then(|s| serde_json::to_string(s).ok());
+                let candidate_ids_json = item.candidate_ids.as_ref().and_then(|s| serde_json::to_string(s).ok());
+                stmt.execute(rusqlite::params![
+                    item.id,
+                    item.download_url,
+                    item.original_date,
+                    item.location,
+                    item.state.as_ref(),
+                    item.error_message,
+                    item.extension,
+                    item.has_overlay as i32,
+                    item.has_thumbnail as i32,
+                    item.media_type,
+                    segment_ids_json,
+                    candidate_ids_json
+                ])?;
             }
-            tx.commit()?;
             Ok(())
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
         Ok(())
     }
 
@@ -170,7 +175,7 @@ impl MemoryRepository for DbManager {
                     cloned_id
                 ],
             )
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
 
         Ok(())
     }
@@ -178,7 +183,7 @@ impl MemoryRepository for DbManager {
     /// Retrieves all memory items
     async fn get_all_memories(&self) -> Result<Vec<MemoryItem>> {
         let memories = self.conn.call(|conn| {
-            let mut stmt = conn.prepare("SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids FROM memories")?;
+            let mut stmt = conn.prepare("SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids, candidate_ids FROM memories")?;
             let mut memories = Vec::new();
             let rows = stmt.query_map([], |row| {
                 let state_str: String = row.get(4)?;
@@ -187,9 +192,15 @@ impl MemoryRepository for DbManager {
                     .ok()
                     .flatten()
                     .and_then(|s| serde_json::from_str(&s).ok());
+                let candidate_ids: Option<Vec<String>> = row
+                    .get::<_, Option<String>>(11)
+                    .ok()
+                    .flatten()
+                    .and_then(|s| serde_json::from_str(&s).ok());
                 Ok(MemoryItem {
                     id: row.get(0)?,
                     segment_ids,
+                    candidate_ids,
                     download_url: row.get(1)?,
                     original_date: row.get(2)?,
                     location: row.get(3)?,
@@ -207,7 +218,7 @@ impl MemoryRepository for DbManager {
                 }
             }
             Ok(memories)
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
         
         Ok(memories)
     }
@@ -217,7 +228,7 @@ impl MemoryRepository for DbManager {
         let state_str = state.as_ref().to_string();
         let memories = self.conn.call(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids FROM memories WHERE state = ?1",
+                "SELECT id, download_url, original_date, location, state, error_message, extension, has_overlay, has_thumbnail, media_type, segment_ids, candidate_ids FROM memories WHERE state = ?1",
             )?;
             let mut memories = Vec::new();
             let rows = stmt.query_map([state_str], |row| {
@@ -227,9 +238,15 @@ impl MemoryRepository for DbManager {
                     .ok()
                     .flatten()
                     .and_then(|s| serde_json::from_str(&s).ok());
+                let candidate_ids: Option<Vec<String>> = row
+                    .get::<_, Option<String>>(11)
+                    .ok()
+                    .flatten()
+                    .and_then(|s| serde_json::from_str(&s).ok());
                 Ok(MemoryItem {
                     id: row.get(0)?,
                     segment_ids,
+                    candidate_ids,
                     download_url: row.get(1)?,
                     original_date: row.get(2)?,
                     location: row.get(3)?,
@@ -247,7 +264,7 @@ impl MemoryRepository for DbManager {
                 }
             }
             Ok(memories)
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
 
         Ok(memories)
     }
@@ -266,7 +283,7 @@ impl MemoryRepository for DbManager {
                 "UPDATE memories SET state = ?1, error_message = NULL WHERE state = ?2",
                 rusqlite::params![to_str, from_str],
             )
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
 
         Ok(())
     }
@@ -281,7 +298,7 @@ impl MemoryRepository for DbManager {
                 "UPDATE memories SET state = ?1, error_message = NULL WHERE id = ?2",
                 rusqlite::params![pending_str, cloned_id],
             )
-        }).await.map_err(|e| crate::error::AppError::Database(e.into()))?;
+        }).await.map_err(crate::error::AppError::Database)?;
 
         Ok(())
     }

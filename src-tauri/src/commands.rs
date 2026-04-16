@@ -6,21 +6,20 @@ use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub async fn check_zip_structure(
-    _app: tauri::AppHandle,
     session_id: String,
     path: String,
     state: State<'_, AppState>,
-) -> crate::error::Result<Option<String>> {
+) -> Result<Vec<MemoryItem>> {
     SessionService::check_zip_structure(session_id, path, state).await
 }
 
 #[tauri::command]
-pub fn set_export_paths(
+pub async fn set_export_paths(
     session_id: String,
     paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<()> {
-    SessionService::set_export_paths(session_id, paths, state)
+    SessionService::set_export_paths(session_id, paths, state).await
 }
 
 #[tauri::command]
@@ -40,13 +39,18 @@ pub async fn get_memories_state(session_id: String, state: State<'_, AppState>) 
 }
 
 #[tauri::command]
-pub fn reset_application(session_id: String, state: State<'_, AppState>) -> Result<()> {
-    SessionService::reset_application(session_id, state)
+pub async fn reset_application(session_id: String, state: State<'_, AppState>) -> Result<()> {
+    SessionService::reset_application(session_id, state).await
 }
 
 #[tauri::command]
-pub fn cleanup_database(session_id: String, app: AppHandle, state: State<'_, AppState>) -> Result<()> {
-    SessionService::cleanup_database(session_id, app, state)
+pub async fn cleanup_database(session_id: String, app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+    SessionService::cleanup_database(session_id, app, state).await
+}
+
+#[tauri::command]
+pub async fn clear_all_data(app: AppHandle, state: State<'_, AppState>) -> Result<()> {
+    SessionService::clear_all_data(app, state).await
 }
 
 #[tauri::command]
@@ -77,16 +81,16 @@ pub async fn pause_pipeline(session_id: String, state: State<'_, AppState>) -> R
 // DELETED extract_preview_media command
 
 #[tauri::command]
-pub fn resolve_local_media_paths(
+pub async fn resolve_local_media_paths(
     session_id: String,
     memory_ids: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<std::collections::HashMap<String, String>> {
-    SessionService::resolve_local_media_paths(session_id, memory_ids, state)
+    SessionService::resolve_local_media_paths(session_id, memory_ids, state).await
 }
 
 #[tauri::command]
-pub fn check_overlay_exists(output_dir: String, memory_id: String, clean_date: String) -> Result<bool> {
+pub async fn check_overlay_exists(output_dir: String, memory_id: String, clean_date: String) -> Result<bool> {
     SessionService::check_overlay_exists(output_dir, memory_id, clean_date)
 }
 

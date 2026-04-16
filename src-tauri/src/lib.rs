@@ -13,6 +13,7 @@ pub mod fs;
 pub mod infra;
 pub mod metadata;
 pub mod models;
+pub mod parser;
 pub mod pipeline;
 pub mod services;
 
@@ -83,7 +84,7 @@ pub fn run() {
             Ok(())
         })
         .manage(services::session::AppState {
-            sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+            sessions: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_zip_structure,

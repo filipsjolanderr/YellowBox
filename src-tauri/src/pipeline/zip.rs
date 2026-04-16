@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 use serde::Serialize;
 use chrono::{NaiveDate, NaiveDateTime};
@@ -44,7 +45,7 @@ pub fn extract_from_export_zip(
     use std::fs::File;
     use std::io::BufReader;
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
-    let reader = BufReader::new(file);
+    let reader = BufReader::with_capacity(256 * 1024, file);
     let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
 
     let clean_date = date_str.map(|s| crate::metadata::get_clean_date_prefix(s));
@@ -102,31 +103,55 @@ fn id_match_variants(id: &str) -> Vec<String> {
     }
 }
 
-/// Extracts date prefix (YYYY-MM-DD_HH-MM-SS or YYYY-MM-DD) from ZIP entry name for disambiguation.
-/// Snapchat exports use "2021-01-15_12-30-00_ID-main.mp4" - same ID can appear in Jan and Mar.
+fn normalize_date_prefix(s: &str) -> String {
+    if s.len() >= 19 {
+        let mut normalized = s[..19].to_string();
+        // Force YYYY-MM-DD_HH-MM-SS format
+        normalized.replace_range(10..11, "_");
+        normalized.replace_range(13..14, "-");
+        normalized.replace_range(16..17, "-");
+        normalized
+    } else if s.len() >= 10 {
+        s[..10].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 fn extract_date_prefix_from_name(name: &str) -> Option<String> {
-    let base = Path::new(name).file_name().and_then(|n| n.to_str())?;
+    let base = Path::new(name).file_name()?.to_str()?;
+    
+    // Attempt 19-char timestamp (YYYY-MM-DD_HH-MM-SS)
     if base.len() >= 19 {
         let s = &base[..19];
         if s.chars().enumerate().all(|(i, c)| match i {
             4 | 7 => c == '-',
-            10 => c == '_' || c == ' ',
-            13 | 16 => c == '-',
+            10 => c == '_' || c == ' ' || c == '-',
+            13 | 16 => c == '-' || c == '_',
             _ => c.is_ascii_digit(),
         }) {
-            return Some(s.replace(' ', "_"));
+            return Some(s.to_string());
         }
     }
-    if base.len() >= 10 && base[..10].chars().all(|c| c.is_ascii_digit() || c == '-') {
-        return Some(base[..10].to_string());
+    
+    // Attempt 10-char date (YYYY-MM-DD)
+    if base.len() >= 10 {
+        let s = &base[..10];
+        if s.chars().enumerate().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        }) {
+            return Some(s.to_string());
+        }
     }
+    
     None
 }
 
 fn date_prefix_to_epoch_seconds(date_prefix: &str) -> Option<i64> {
-    if date_prefix.len() >= 19 {
-        // YYYY-MM-DD_HH-MM-SS
-        if let Ok(dt) = NaiveDateTime::parse_from_str(date_prefix, "%Y-%m-%d_%H-%M-%S") {
+    let normalized = normalize_date_prefix(date_prefix);
+    if normalized.len() >= 19 {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d_%H-%M-%S") {
             return Some(dt.and_utc().timestamp());
         }
     }
@@ -164,7 +189,8 @@ pub(crate) fn id_appears_as_token(name: &str, id: &str) -> bool {
             if before_ok && after_ok {
                 return true;
             }
-            search_start = end;
+            tracing::trace!(name = %name_lower, variant = %variant, before_ok, after_ok, "zip: token match failed on boundaries");
+            search_start = abs_pos + 1;
         }
     }
     false
@@ -271,7 +297,6 @@ fn composite_key(date: Option<&str>, id: &str) -> String {
     }
 }
 
-/// Extracts the media ID from a ZIP filename. Format: "DATE_ID-main.mp4" or "DATE_ID-overlay.png".
 pub(crate) fn extract_id_from_filename(name: &str) -> Option<String> {
     let base = Path::new(name).file_name().and_then(|n| n.to_str())?;
     let before_ext = base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base);
@@ -282,6 +307,7 @@ pub(crate) fn extract_id_from_filename(name: &str) -> Option<String> {
     let after_date = id_part
         .strip_prefix(&date)?
         .trim_start_matches('_')
+        .trim_start_matches('-') // Added hyphen support
         .trim_start_matches(' ');
     if after_date.is_empty() {
         return None;
@@ -297,6 +323,7 @@ fn extract_ids_from_overlay_filename(name: &str) -> Option<Vec<String>> {
     let after_date = before_ext
         .strip_prefix(&date)?
         .trim_start_matches('_')
+        .trim_start_matches('-') // Added hyphen support
         .trim_start_matches(' ');
     if after_date.is_empty() {
         return None;
@@ -316,13 +343,10 @@ fn extract_ids_from_overlay_filename(name: &str) -> Option<Vec<String>> {
     Some(ids)
 }
 
-/// Builds an index of "date|id" -> (zip_index, extension) for main media only (excludes overlay).
-/// Indexes ALL media files (not just item_ids) so we can match by date when JSON IDs differ from ZIP.
-/// Uses date from ZIP filename to disambiguate when same ID appears in multiple months.
-/// Prefers -main files. Call from spawn_blocking since it does sync I/O.
-/// Builds an index of "date|id" -> (zip_file_index, zip_entry_index, extension) for main media only (excludes overlay).
-/// Indexes ALL media files (not just item_ids) so we can match by date when JSON IDs differ from ZIP.
-/// Uses date from ZIP filename to disambiguate when same ID appears in multiple months.
+/// Builds an index of `"date|id"` → `(zip_file_index, zip_entry_index, extension)` for main media only
+/// (excludes overlay). Indexes ALL media files so we can match by date when JSON IDs differ from ZIP.
+/// Uses date from the ZIP filename to disambiguate when the same ID appears in multiple months.
+/// Prefers `-main` files. Call from `spawn_blocking` since it performs synchronous I/O.
 pub fn build_main_media_zip_index(
     zip_paths: &[PathBuf],
     item_ids: &[String],
@@ -336,6 +360,7 @@ pub fn build_main_media_zip_index(
 pub struct OverlayItemRef {
     pub id: String,
     pub segment_ids: Option<Vec<String>>,
+    pub candidate_ids: Option<Vec<String>>,
 }
 
 /// Builds an index of "date|primary_id" -> (zip_file_index, zip_entry_index, extension) for overlay files only.
@@ -377,11 +402,13 @@ pub fn build_pipeline_zip_indexes(
     let mut segment_to_primary: HashMap<String, (&OverlayItemRef, HashSet<String>)> = HashMap::new();
     for item in overlay_refs {
         let mut item_ids: HashSet<String> = HashSet::new();
-        let ids: Vec<String> = item
-            .segment_ids
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| vec![item.id.clone()]);
+        // Use candidate_ids if available, otherwise fallback to id+segments
+        let ids: Vec<String> = item.candidate_ids.as_ref().cloned().unwrap_or_else(|| {
+            item.segment_ids
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| vec![item.id.clone()])
+        });
         
         for id in ids {
             let id_lower = id.to_lowercase();
@@ -404,132 +431,34 @@ pub fn build_pipeline_zip_indexes(
         for (zip_file_idx, zip_path) in zip_paths.iter().enumerate() {
             let zip_path = zip_path.clone();
             let session_id = session_id.to_string();
-            let app = app.map(|a| a.clone());
+            let app = app.cloned();
             let main_id_map = &main_id_map;
             let segment_to_primary = &segment_to_primary;
 
-            handlers.push(s.spawn(move || -> std::result::Result<(HashMap<String, (usize, usize, String)>, HashMap<String, (usize, usize, String, usize)>), String> {
-                let zip_start = std::time::Instant::now();
-                let mut local_main = HashMap::new();
-                let mut local_overlay = HashMap::new();
-                let zip_path_str = zip_path.to_string_lossy().to_string();
-
-                if let Some(ref app) = app {
-                    let _ = app.emit(
-                        &format!("zip-indexing-progress-{}", session_id),
-                        ZipProgressPayload {
-                            path: zip_path_str.clone(),
-                            progress: 0.0,
-                        },
-                    );
-                }
-
-                let file = std::fs::File::open(&zip_path)
-                    .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
-                let reader = std::io::BufReader::new(file);
-                let archive = zip::ZipArchive::new(reader)
-                    .map_err(|e| format!("Invalid zip {}: {}", zip_path.display(), e))?;
-                let len = archive.len();
-
-                let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
-                for (i, name) in names.into_iter().enumerate() {
-                    if i % 1000 == 0 && i > 0 {
-                        if let Some(ref app) = app {
-                            let _ = app.emit(
-                                &format!("zip-indexing-progress-{}", session_id),
-                                ZipProgressPayload {
-                                    path: zip_path_str.clone(),
-                                    progress: (i as f32 / len as f32) * 100.0,
-                                },
-                            );
-                        }
-                    }
-                    
-                    let name_lower = name.to_lowercase();
-                    let ext = Path::new(&name)
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("zip")
-                        .to_string();
-                    
-                    let is_main = name_lower.contains("-main");
-                    let is_explicit_overlay = name_lower.contains("-overlay") || name_lower.contains("overlay");
-                    let is_png = ext.eq_ignore_ascii_case("png");
-                    let date = extract_date_prefix_from_name(&name);
-
-                    let ids_from_file = if is_explicit_overlay || is_png {
-                        extract_ids_from_overlay_filename(&name).unwrap_or_default()
-                    } else {
-                        extract_id_from_filename(&name).map(|id| vec![id]).unwrap_or_default()
-                    };
-
-                    if !name_lower.contains("-overlay") {
-                        for id in &ids_from_file {
-                            let key_from_file = composite_key(date.as_deref(), id);
-                            if is_main || !local_main.contains_key(&key_from_file) {
-                                local_main.insert(key_from_file, (zip_file_idx, i, ext.clone()));
-                            }
-
-                            if let Some(original_id) = main_id_map.get(&id.to_lowercase()) {
-                                let key_from_json = composite_key(date.as_deref(), original_id);
-                                if is_main || !local_main.contains_key(&key_from_json) {
-                                    local_main.insert(key_from_json, (zip_file_idx, i, ext.clone()));
-                                }
-                            }
-                        }
-                    }
-
-                    if is_explicit_overlay || (is_png && !is_main) {
-                        let mut matching_ids: HashSet<String> = HashSet::new();
-                        for id in &ids_from_file {
-                            let id_lower = id.to_lowercase();
-                            if segment_to_primary.contains_key(&id_lower) {
-                                matching_ids.insert(id_lower);
-                            }
-                        }
-
-                        if !matching_ids.is_empty() {
-                            let specificity = matching_ids.len();
-                            let best_ref = matching_ids.iter()
-                                .filter_map(|m| segment_to_primary.get(m))
-                                .find(|&(_, ref item_ids)| matching_ids.iter().all(|m| item_ids.contains(m)));
-
-                            if let Some((item, _)) = best_ref {
-                                let key = composite_key(date.as_deref(), &item.id);
-                                let should_insert = local_overlay.get(&key).map_or(true, |(_, _, _, s)| specificity > *s);
-                                if should_insert {
-                                    local_overlay.insert(key, (zip_file_idx, i, ext.clone(), specificity));
-                                }
-                            } else if let Some(first_match_id) = matching_ids.iter().next() {
-                                 if let Some((item, _)) = segment_to_primary.get(first_match_id) {
-                                    let key = composite_key(date.as_deref(), &item.id);
-                                    let should_insert = local_overlay.get(&key).map_or(true, |(_, _, _, s)| *s == 0 && specificity > 0);
-                                    if should_insert {
-                                        local_overlay.insert(key, (zip_file_idx, i, ext.clone(), 0));
-                                    }
-                                 }
-                            }
-                        }
-                    }
-                }
-                if let Some(ref app) = app {
-                    let _ = app.emit(
-                        &format!("zip-indexing-progress-{}", session_id),
-                        ZipProgressPayload {
-                            path: zip_path_str.clone(),
-                            progress: 100.0,
-                        },
-                    );
-                }
-                tracing::info!(zip_path = %zip_path.display(), entries = len, elapsed_ms = zip_start.elapsed().as_millis(), "zip: indexed archive");
-                Ok((local_main, local_overlay))
+            handlers.push(s.spawn(move || {
+                index_single_zip(
+                    zip_file_idx,
+                    &zip_path,
+                    &session_id,
+                    app.as_ref(),
+                    main_id_map,
+                    segment_to_primary,
+                )
             }));
         }
 
-        for handler in handlers {
-            if let Ok(Ok((local_main, local_ov))) = handler.join() {
-                main_index.extend(local_main);
-                overlay_temp.extend(local_ov);
+        for (zip_file_idx, handler) in handlers.into_iter().enumerate() {
+            match handler.join() {
+                Ok(Ok((local_main, local_ov))) => {
+                    main_index.extend(local_main);
+                    overlay_temp.extend(local_ov);
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(zip_file_idx, error = %e, "zip: indexing failed for archive");
+                }
+                Err(_) => {
+                    tracing::error!(zip_file_idx, "zip: indexer thread panicked");
+                }
             }
         }
     });
@@ -556,6 +485,176 @@ pub fn build_overlay_zip_index(
 ) -> std::result::Result<HashMap<String, (usize, usize, String)>, String> {
     let (_, overlay_idx) = build_pipeline_zip_indexes(None, "", zip_paths, &[], items)?;
     Ok(overlay_idx)
+}
+
+/// Indexes a single ZIP archive. Called from a scoped thread by `build_pipeline_zip_indexes`.
+///
+/// Returns `(local_main, local_overlay)` maps keyed by `"date|id"`.
+/// Progress events are emitted at most once every 200 ms to avoid flooding the frontend.
+#[allow(clippy::type_complexity)]
+fn index_single_zip(
+    zip_file_idx: usize,
+    zip_path: &Path,
+    session_id: &str,
+    app: Option<&tauri::AppHandle>,
+    main_id_map: &HashMap<String, String>,
+    segment_to_primary: &HashMap<String, (&OverlayItemRef, HashSet<String>)>,
+) -> std::result::Result<
+    (
+        HashMap<String, (usize, usize, String)>,
+        HashMap<String, (usize, usize, String, usize)>,
+    ),
+    String,
+> {
+    let zip_start = Instant::now();
+    let mut local_main: HashMap<String, (usize, usize, String)> = HashMap::new();
+    let mut local_overlay: HashMap<String, (usize, usize, String, usize)> = HashMap::new();
+    let zip_path_str = zip_path.to_string_lossy().to_string();
+
+    // Throttle: emit at most one progress event per 200 ms.
+    const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
+    let mut last_emit = Instant::now()
+        .checked_sub(PROGRESS_INTERVAL)
+        .unwrap_or(Instant::now());
+
+    let emit_progress = |progress: f32, last_emit: &mut Instant| {
+        if let Some(ref app) = app {
+            let now = Instant::now();
+            if now.duration_since(*last_emit) >= PROGRESS_INTERVAL {
+                let _ = app.emit(
+                    &format!("zip-indexing-progress-{}", session_id),
+                    ZipProgressPayload {
+                        path: zip_path_str.clone(),
+                        progress,
+                    },
+                );
+                *last_emit = now;
+            }
+        }
+    };
+
+    emit_progress(0.0, &mut last_emit);
+
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
+    let reader = std::io::BufReader::with_capacity(256 * 1024, file);
+    let archive = zip::ZipArchive::new(reader)
+        .map_err(|e| format!("Invalid zip {}: {}", zip_path.display(), e))?;
+    let len = archive.len();
+
+    let names: Vec<String> = archive.file_names().map(|n| n.to_string()).collect();
+    for (i, name) in names.into_iter().enumerate() {
+        emit_progress((i as f32 / len as f32) * 100.0, &mut last_emit);
+
+        let name_lower = name.to_lowercase();
+        let ext = Path::new(&name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("zip")
+            .to_string();
+
+        let is_main = name_lower.contains("-main");
+        let is_explicit_overlay = name_lower.contains("-overlay") || name_lower.contains("overlay");
+        let is_png = ext.eq_ignore_ascii_case("png");        let date = extract_date_prefix_from_name(&name);
+        let normalized_date_prefix = date.as_ref().map(|d| normalize_date_prefix(d));
+
+        let ids_from_file = if is_explicit_overlay || is_png {
+            extract_ids_from_overlay_filename(&name).unwrap_or_default()
+        } else {
+            extract_id_from_filename(&name).map(|id| vec![id]).unwrap_or_default()
+        };
+
+        if ids_from_file.is_empty() && (is_main || is_explicit_overlay) {
+             tracing::debug!(name = %name, "zip: failed to extract ID from filename");
+        }
+
+        if !name_lower.contains("-overlay") {
+            for id in &ids_from_file {
+                let id_lower = id.to_lowercase();
+                
+                // 1. Direct index by ID in filename
+                let key_from_file = composite_key(normalized_date_prefix.as_deref(), &id_lower);
+                if is_main || !local_main.contains_key(&key_from_file) {
+                    local_main.insert(key_from_file, (zip_file_idx, i, ext.clone()));
+                }
+
+                // 2. Index by all known aliases (siblings) for this segment.
+                // This ensures lookup works regardless of whether filename used SID or MID.
+                if let Some((_item, item_ids)) = segment_to_primary.get(&id_lower) {
+                    for alias_id in item_ids {
+                        let alias_key = composite_key(normalized_date_prefix.as_deref(), alias_id);
+                        if is_main || !local_main.contains_key(&alias_key) {
+                            local_main.insert(alias_key, (zip_file_idx, i, ext.clone()));
+                        }
+                    }
+                }
+
+                // 3. Fallback check from main_id_map
+                if let Some(original_id) = main_id_map.get(&id_lower) {
+                    let key_from_json = composite_key(normalized_date_prefix.as_deref(), original_id);
+                    if is_main || !local_main.contains_key(&key_from_json) {
+                        local_main.insert(key_from_json, (zip_file_idx, i, ext.clone()));
+                    }
+                }
+            }
+        }
+
+
+        if is_explicit_overlay || (is_png && !is_main) {
+            let mut matching_ids: HashSet<String> = HashSet::new();
+            for id in &ids_from_file {
+                let id_lower = id.to_lowercase();
+                if segment_to_primary.contains_key(&id_lower) {
+                    matching_ids.insert(id_lower);
+                }
+            }
+
+            if !matching_ids.is_empty() {
+                let specificity = matching_ids.len();
+                let best_ref = matching_ids
+                    .iter()
+                    .filter_map(|m| segment_to_primary.get(m))
+                    .find(|&(_, ref item_ids)| matching_ids.iter().all(|m| item_ids.contains(m)));
+
+                if let Some((item, _)) = best_ref {
+                    let key = composite_key(date.as_deref(), &item.id);
+                    let should_insert =
+                        local_overlay.get(&key).map_or(true, |(_, _, _, s)| specificity > *s);
+                    if should_insert {
+                        local_overlay.insert(key, (zip_file_idx, i, ext.clone(), specificity));
+                    }
+                } else if let Some(first_match_id) = matching_ids.iter().next() {
+                    if let Some((item, _)) = segment_to_primary.get(first_match_id) {
+                        let key = composite_key(date.as_deref(), &item.id);
+                        let should_insert = local_overlay
+                            .get(&key)
+                            .map_or(true, |(_, _, _, s)| *s == 0 && specificity > 0);
+                        if should_insert {
+                            local_overlay.insert(key, (zip_file_idx, i, ext.clone(), 0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Final 100% progress (always emit, bypassing the throttle).
+    if let Some(ref app) = app {
+        let _ = app.emit(
+            &format!("zip-indexing-progress-{}", session_id),
+            ZipProgressPayload {
+                path: zip_path_str,
+                progress: 100.0,
+            },
+        );
+    }
+    tracing::info!(
+        zip_path = %zip_path.display(),
+        entries = len,
+        elapsed_ms = zip_start.elapsed().as_millis(),
+        "zip: indexed archive"
+    );
+    Ok((local_main, local_overlay))
 }
 
 #[cfg(test)]
@@ -645,10 +744,12 @@ mod tests {
             OverlayItemRef {
                 id: id1.to_string(),
                 segment_ids: Some(vec![id1.to_string(), id2.to_string()]),
+                candidate_ids: None,
             },
             OverlayItemRef {
                 id: id3.to_string(),
                 segment_ids: None,
+                candidate_ids: None,
             },
         ];
         let overlay_index = build_overlay_zip_index(&[zip_path], &items).unwrap();
@@ -755,6 +856,7 @@ mod tests {
         let items = vec![OverlayItemRef {
             id: id1.to_string(),
             segment_ids: Some(vec![id1.to_string(), id2.to_string()]),
+            candidate_ids: None,
         }];
         let overlay_index = build_overlay_zip_index(&[zip_path], &items).unwrap();
         assert!(overlay_index.len() >= 1);
@@ -765,6 +867,24 @@ mod tests {
             *ov_idx_ent, 2,
             "split overlay (ID1_ID2.png) should win over single (ID1-overlay.png)"
         );
+    }
+
+    #[test]
+    fn test_extract_id_from_filename_35char_hyphen_date() {
+        // Test case based on findings: 10-char date with hyphen separator, and a non-standard length ID.
+        let name = "memories/2021-11-06-82a52b8f-099b-507-1cd2-c30936076a8a-main.mp4";
+        let date = extract_date_prefix_from_name(name).expect("Should extract 10-char date");
+        assert_eq!(date, "2021-11-06");
+        let id = extract_id_from_filename(name).expect("Should extract ID");
+        assert_eq!(id, "82a52b8f-099b-507-1cd2-c30936076a8a");
+    }
+
+    #[test]
+    fn test_normalize_date_prefix_hyphens() {
+        // Test normalization of dashes to underscores in timestamps
+        let raw = "2021-01-15-12-30-00";
+        let normalized = normalize_date_prefix(raw);
+        assert_eq!(normalized, "2021-01-15_12-30-00");
     }
 }
 

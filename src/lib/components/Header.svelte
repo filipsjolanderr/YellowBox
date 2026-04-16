@@ -75,8 +75,9 @@
 <header
   data-tauri-drag-region
   onpointerdown={startDrag}
-  class="flex h-14 items-center justify-between border-b border-border/50 bg-card px-4 shrink-0 relative select-none"
+  class="flex h-14 items-center justify-between border-b border-border/40 backdrop-blur-xl bg-card/60 px-4 shrink-0 shadow-sm z-50 select-none sticky top-0"
 >
+  <div class="absolute inset-x-0 -bottom-px h-px bg-gradient-to-r from-transparent via-primary/20 to-transparent"></div>
   <!-- Left Section: Logo -->
   <div class="flex items-center flex-1 h-full" data-tauri-drag-region>
     <img
@@ -93,7 +94,7 @@
     data-tauri-drag-region
   >
     <h1
-      class="text-sm font-semibold tracking-tight leading-none pointer-events-auto cursor-default"
+      class="text-[13px] font-semibold leading-none pointer-events-auto cursor-default text-foreground/80 drop-shadow-sm"
     >
       YellowBox
     </h1>
@@ -149,10 +150,10 @@
           <Button
             variant="ghost"
             size="icon"
-            class={`${windowControlBase} hover:bg-muted active:bg-muted/70`}
+            class={`${windowControlBase} hover:bg-destructive hover:text-destructive-foreground active:scale-95 transition-all duration-200`}
             onclick={close}
           >
-            <X class="h-6 w-6" />
+            <X class="h-4.5 w-4.5" />
           </Button>
         </Tooltip.Trigger>
         <Tooltip.Content sideOffset={4}>

@@ -16,17 +16,17 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
     ctx: PipelineContext<R>,
     mut msg: PipelineMessage,
 ) -> Result<()> {
-    const MAX_ATTEMPTS: u32 = 6;
+    const MAX_ATTEMPTS: u32 = 3;
     let mut last_error = None;
 
     let item_id = msg.item.id.clone();
-    let mut item_for_fail = msg.item.clone();
+    // Snapshot before any stage mutations so failure records the original state.
+    let item_for_fail = msg.item.clone();
 
     let item_start = std::time::Instant::now();
     info!(id = %item_id, "pipeline: processing item");
 
     for attempt in 1..=MAX_ATTEMPTS {
-        item_for_fail = msg.item.clone();
         if ctx.is_cancelled.load(Ordering::SeqCst) {
             let _ = ctx
                 .updates

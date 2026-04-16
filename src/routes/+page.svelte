@@ -13,7 +13,11 @@
   import { Session } from "$lib/session.svelte";
   import { fade } from "svelte/transition";
 
-  let session = $state<Session>(new Session(crypto.randomUUID(), "Backup"));
+  // If we have a previously-running session recorded, reuse the same session_id so
+  // the backend can load the existing SQLite DB and continue from where it left off.
+  let session = $state<Session>(
+    new Session(appConfig.lastSessionId ?? crypto.randomUUID(), "Backup"),
+  );
 
   let hasAttemptedAppLoad = $state(false);
 
@@ -28,15 +32,14 @@
     unlistenAll = await tauriService.listenForMemoryUpdates(sessionId, (updatedMemory) => {
       const index = session.memories.findIndex((m) => m.id === updatedMemory.id);
       if (index !== -1) {
-        session.memories[index] = updatedMemory;
-        session.memories = [...session.memories];
+      session.memories[index] = updatedMemory;
       }
     });
     unlistenStatus = await tauriService.listenForPipelineStatus(sessionId, (status) => {
       session.statusMessage = status;
     });
     unlistenZip = await tauriService.listenForZipIndexingProgress(sessionId, (payload) => {
-      session.zipProgress[payload.path] = payload.progress;
+      session.zipProgress.set(payload.path, payload.progress);
     });
   }
 
@@ -51,6 +54,9 @@
   $effect(() => {
     if (session.isProcessing && session.isAllProcessed) {
       session.isProcessing = false;
+      // Backup is done; no resume needed.
+      appConfig.lastSessionId = null;
+      appConfig.save();
       if (session.failedCount === 0) {
         confetti({
           particleCount: 150,
@@ -124,7 +130,7 @@
   });
 
   function syncValidExportPaths() {
-    const valid = session.selectedZips.filter((p) => session.zipValidity[p] === "valid");
+    const valid = session.selectedZips.filter((p) => session.zipValidity.get(p) === "valid");
     tauriService.setExportPaths(session.id, valid).catch(console.error);
   }
 
@@ -135,22 +141,22 @@
       session.parsingProgress.set(85, { duration: 2500 });
       
       // Initialize progress for this specific zip
-      session.zipProgress[path] = 0;
-      session.zipValidity[path] = "checking";
+      session.zipProgress.set(path, 0);
+      session.zipValidity.set(path, "checking");
 
       if (!session.selectedZips.includes(path)) {
         session.selectedZips.push(path);
       }
 
       // Retry mechanism for ZIP loading
-      let jsonContent: string | null = null;
+      let newItems: ParsedMemory[] = [];
       let lastErr: any = null;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           // Update progress slightly per attempt if it's taking time
-          session.zipProgress[path] = (attempt - 1) * 20;
-          jsonContent = await tauriService.checkZipStructure(session.id, path);
-          session.zipProgress[path] = 80;
+          session.zipProgress.set(path, (attempt - 1) * 20);
+          newItems = await tauriService.checkZipStructure(session.id, path);
+          session.zipProgress.set(path, 80);
           break;
         } catch (err) {
           lastErr = err;
@@ -161,50 +167,55 @@
         }
       }
 
-      if (lastErr && !jsonContent) {
-        session.zipValidity[path] = "invalid";
-        session.zipProgress[path] = 100;
+      if (lastErr && newItems.length === 0) {
+        session.zipValidity.set(path, "invalid");
+        session.zipProgress.set(path, 100);
+        session.memoryIdsByZip.delete(path);
         syncValidExportPaths();
         return;
       }
 
       session.parsingProgress.set(95, { duration: 300 });
 
-      let newItemsCount = 0;
-      if (jsonContent) {
-        const newItems = parseMemoriesJson(jsonContent);
-        newItemsCount = newItems.length;
+      if (newItems.length > 0) {
         const existingIds = new Set(session.parsedItems.map((i) => i.id));
         const mergedItems = [...session.parsedItems];
+        const addedIds: string[] = [];
         for (const item of newItems) {
           if (!existingIds.has(item.id)) {
             mergedItems.push(item);
             existingIds.add(item.id);
+            addedIds.push(item.id);
           }
         }
         session.parsedItems = mergedItems;
+        // Only "newly added" IDs count for per-ZIP preview totals,
+        // ensuring the counts sum up to the unique set we keep in state.
+        session.memoryIdsByZip.set(path, addedIds);
       }
 
       // Valid Snapchat export must produce at least one memory item from the ZIP JSON.
-      if (!jsonContent || newItemsCount === 0) {
-        session.zipValidity[path] = "invalid";
-        session.zipProgress[path] = 100;
+      if (newItems.length === 0) {
+        session.zipValidity.set(path, "invalid");
+        session.zipProgress.set(path, 100);
+        session.memoryIdsByZip.delete(path);
         await session.parsingProgress.set(100, { duration: 500 });
         syncValidExportPaths();
       } else {
-        session.zipValidity[path] = "valid";
+        session.zipValidity.set(path, "valid");
         if (!appConfig.lastZips.includes(path)) {
           appConfig.lastZips.push(path);
           appConfig.save();
         }
-        session.zipProgress[path] = 100;
+        session.zipProgress.set(path, 100);
         await session.parsingProgress.set(100, { duration: 500 });
         syncValidExportPaths();
       }
     } catch (err) {
       console.error("Error processing zip:", err);
-      session.zipValidity[path] = "invalid";
-      session.zipProgress[path] = 100;
+      session.zipValidity.set(path, "invalid");
+      session.zipProgress.set(path, 100);
+      session.memoryIdsByZip.delete(path);
       syncValidExportPaths();
     } finally {
       session.activeParsingTasks--;
@@ -215,8 +226,9 @@
     session.selectedZips = session.selectedZips.filter((z) => z !== path);
     appConfig.lastZips = appConfig.lastZips.filter((z) => z !== path);
     appConfig.save();
-    delete session.zipProgress[path];
-    delete session.zipValidity[path];
+    session.zipProgress.delete(path);
+    session.zipValidity.delete(path);
+    session.memoryIdsByZip.delete(path);
     syncValidExportPaths();
 
     if (session.selectedZips.length === 0) {
@@ -305,6 +317,9 @@
 
     session.isProcessing = true;
     try {
+      // Persist session so we can resume after restart.
+      appConfig.lastSessionId = session.id;
+      appConfig.save();
       await tauriService.startPipeline(
         session.id,
         appConfig.overwriteExisting,
@@ -337,6 +352,35 @@
     }
   }
 
+  async function retryMemory(itemId: string) {
+    try {
+      await tauriService.retryItem(session.id, itemId);
+
+      // Optimistic UI update: retry does not emit memory-updated immediately.
+      const idx = session.memories.findIndex((m) => m.id === itemId);
+      if (idx !== -1) {
+        session.memories[idx] = {
+          ...session.memories[idx],
+          state: "Pending",
+          errorMessage: undefined,
+        };
+      }
+
+      session.isProcessing = true;
+      session.isPaused = false;
+
+      // Restart pipeline so the backend starts processing the reset item(s).
+      await tauriService.startPipeline(
+        session.id,
+        false,
+        appConfig.maxConcurrency,
+        session.selectedOutput,
+      );
+    } catch (err) {
+      console.error("Retry error:", err);
+    }
+  }
+
   async function cancelAndReset() {
     if (session.isProcessing || session.isPaused) {
       const confirmed = await ask(
@@ -351,6 +395,9 @@
     try { await tauriService.pausePipeline(oldId); } catch {}
     try { await tauriService.cleanupDatabase(oldId); } catch {}
     try { await tauriService.closeSession(oldId); } catch {}
+
+    appConfig.lastSessionId = null;
+    appConfig.save();
 
     // New single session.
     session = new Session(crypto.randomUUID(), "Backup");
@@ -371,6 +418,7 @@
         onSelectOutput={handleSelectOutput}
         onStartBackup={startBackup}
         onTogglePause={togglePause}
+        {...({ onRetryMemory: retryMemory } as any)}
         onAddZip={handleSelectZip}
         onDropZip={processZipPath}
         onRemoveZip={removeZip}

@@ -10,6 +10,7 @@ fn create_mock_item(id: &str) -> MemoryItem {
     MemoryItem {
         segment_ids: None,
         id: id.to_string(),
+        candidate_ids: None,
         download_url: format!("http://example.com/{}", id),
         original_date: "2024-01-01 12:00:00 UTC".to_string(),
         location: None,

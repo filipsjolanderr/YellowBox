@@ -33,8 +33,9 @@ fn test_processing_state_as_ref() {
 #[test]
 fn test_memory_item_serialization() {
     let item = MemoryItem {
-        segment_ids: None,
         id: "test1".to_string(),
+        segment_ids: None,
+        candidate_ids: None,
         download_url: "http://example.com/mem.zip".to_string(),
         original_date: "2022-01-01 12:00:00 UTC".to_string(),
         location: Some("12.34, 56.78".to_string()),
