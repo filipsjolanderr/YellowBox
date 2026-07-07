@@ -194,8 +194,10 @@
         session.memoryIdsByZip.set(path, addedIds);
       }
 
-      // Valid Snapchat export must produce at least one memory item from the ZIP JSON.
-      if (newItems.length === 0) {
+      // Valid Snapchat export must produce at least one memory item from the ZIP JSON
+      // (or be a valid media ZIP part of a split export).
+      const isPart = /mydata~\d+-\d+\.zip$/i.test(path);
+      if (newItems.length === 0 && !isPart) {
         session.zipValidity.set(path, "invalid");
         session.zipProgress.set(path, 100);
         session.memoryIdsByZip.delete(path);

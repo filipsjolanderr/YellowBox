@@ -1,6 +1,6 @@
 [package]
 name = "yellowbox_dev"
-version = "0.1.0"
+version = "1.0.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -35,7 +35,7 @@ chrono = "0.4"
 filetime = "0.2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 url = "2.5"
-zip = "2.2"
+zip = { version = "2.2", features = ["chrono"] }
 image = "0.25"
 walkdir = "2.5"
 thiserror = "2.0.18"

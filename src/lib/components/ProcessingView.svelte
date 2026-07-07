@@ -316,10 +316,10 @@
                     class="flex items-center gap-2 text-lg font-bold tracking-tight"
                   >
                     <ImageIcon class="h-4.5 w-4.5 text-muted-foreground" />
-                    Memories ZIPs
+                    Snapchat ZIP
                   </h3>
                   <p class="text-sm text-muted-foreground">
-                    Add your Snapchat export files to the queue.
+                    Select the main ZIP (e.g. mydata~[epoch].zip) to start.
                   </p>
                 </div>
                 <Badge
@@ -380,10 +380,10 @@
                     <Upload class="h-8 w-8" />
                     <div class="text-center">
                       <p class="text-base font-bold text-foreground">
-                        Add Memories ZIPs
+                        Add Snapchat ZIP
                       </p>
-                      <p class="text-xs mt-1.5">
-                        Drop your Snapchat export files here
+                      <p class="text-xs mt-1.5 px-6">
+                        Drop the main Snapchat ZIP (e.g. mydata~[epoch].zip) here.<br />Sibling parts in the same folder will be discovered automatically.
                       </p>
                     </div>
                   </Button>

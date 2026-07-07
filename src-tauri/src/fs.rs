@@ -18,6 +18,7 @@ pub fn extract_json_from_zip(zip_path: &Path) -> Result<(Option<String>, PathBuf
 
     let mut json_content = String::new();
     let mut found = false;
+    let mut has_memories = false;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
@@ -27,6 +28,13 @@ pub fn extract_json_from_zip(zip_path: &Path) -> Result<(Option<String>, PathBuf
             found = true;
             break;
         }
+        if file.name().starts_with("memories/") {
+            has_memories = true;
+        }
+    }
+
+    if !found && !has_memories {
+        return Err("ZIP file does not contain memories_history.json or a memories/ folder".to_string());
     }
 
     let result_json = if found { Some(json_content) } else { None };
@@ -239,5 +247,112 @@ pub fn resolve_local_media_path(memories_dir: &Path, memory_id: &str) -> Option<
         }
     }
     None
+}
+
+#[derive(Debug, Clone)]
+pub struct ZipMediaInfo {
+    pub id: String,
+    pub filename: String,
+    pub ext: String,
+}
+
+fn extract_id_from_zip_filename(name: &str) -> Option<String> {
+    let base = Path::new(name).file_name()?.to_str()?;
+    let before_ext = base.rsplit_once('.').map(|(s, _)| s).unwrap_or(base);
+    let id_part = before_ext
+        .strip_suffix("-main")
+        .or_else(|| before_ext.strip_suffix("-overlay"))?;
+        
+    if id_part.len() > 20 && (id_part.as_bytes()[19] == b'_' || id_part.as_bytes()[19] == b'-') {
+        Some(id_part[20..].to_string())
+    } else if id_part.len() > 11 && (id_part.as_bytes()[10] == b'_' || id_part.as_bytes()[10] == b'-') {
+        Some(id_part[11..].to_string())
+    } else {
+        None
+    }
+}
+
+pub fn find_sibling_zips(path: &Path) -> Vec<PathBuf> {
+    let mut zip_paths = vec![path.to_path_buf()];
+    if let Some(parent) = path.parent() {
+        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+            let prefix = if let Some(idx) = file_name.find('-') {
+                &file_name[..idx]
+            } else if let Some(idx) = file_name.find('.') {
+                &file_name[..idx]
+            } else {
+                file_name
+            };
+            
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                            if name.starts_with(prefix) && name.ends_with(".zip") && p != path {
+                                zip_paths.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    zip_paths
+}
+
+pub fn scan_all_zips_for_media_info(zip_paths: &[PathBuf]) -> HashMap<(i64, String), ZipMediaInfo> {
+    let mut map = HashMap::new();
+    for path in zip_paths {
+        let file = match File::open(path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let reader = std::io::BufReader::new(file);
+        let mut archive = match ZipArchive::new(reader) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        for i in 0..archive.len() {
+            let file_entry = match archive.by_index(i) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let name = file_entry.name();
+            if !name.starts_with("memories/") || name.ends_with("/") {
+                continue;
+            }
+            if name.contains("-overlay") {
+                continue;
+            }
+            let id = match extract_id_from_zip_filename(name) {
+                Some(id) => id,
+                None => continue,
+            };
+            let ext = Path::new(name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let media_type = if ext.eq_ignore_ascii_case("mp4") || ext.eq_ignore_ascii_case("mov") {
+                "Video".to_string()
+            } else {
+                "Image".to_string()
+            };
+            
+            let last_mod = file_entry.last_modified();
+            if let Some(lm) = last_mod {
+                if let Ok(chrono_dt) = chrono::NaiveDateTime::try_from(lm) {
+                    let ts = chrono_dt.and_utc().timestamp();
+                    map.insert((ts, media_type), ZipMediaInfo {
+                        id,
+                        filename: name.to_string(),
+                        ext,
+                    });
+                }
+            }
+        }
+    }
+    map
 }
 

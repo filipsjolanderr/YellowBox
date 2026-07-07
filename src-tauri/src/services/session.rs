@@ -70,19 +70,30 @@ impl SessionService {
 
         let (json_content, _mem_dir) = content;
 
+        let sibling_zips = fs::find_sibling_zips(&path_buf);
+        let sibling_zips_clone = sibling_zips.clone();
+
         let mut sessions = state.sessions.write().await;
         let session = sessions
             .entry(session_id.clone())
             .or_insert_with(SessionState::new);
 
-        if !session.export_paths.contains(&path_buf) {
-            let mut next = session.export_paths.clone();
-            next.push(path_buf);
-            apply_export_paths(session, next);
+        for zip_p in &sibling_zips_clone {
+            if !session.export_paths.contains(zip_p) {
+                let mut next = session.export_paths.clone();
+                next.push(zip_p.clone());
+                apply_export_paths(session, next);
+            }
         }
 
         let items = if let Some(content) = json_content {
-            crate::parser::parse_memories_json(&content)
+            let zip_media_map = tauri::async_runtime::spawn_blocking(move || {
+                fs::scan_all_zips_for_media_info(&sibling_zips)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+            crate::parser::parse_memories_json_with_zip(&content, &zip_media_map)
         } else {
             Vec::new()
         };

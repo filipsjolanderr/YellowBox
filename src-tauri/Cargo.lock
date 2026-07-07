@@ -6960,6 +6960,7 @@ dependencies = [
  "aes",
  "arbitrary",
  "bzip2",
+ "chrono",
  "constant_time_eq",
  "crc32fast",
  "crossbeam-utils",

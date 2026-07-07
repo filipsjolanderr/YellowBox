@@ -26,6 +26,13 @@ pub struct SnapchatExport {
 const SEGMENT_GAP_SECONDS: i64 = 10;
 
 pub fn parse_memories_json(json_content: &str) -> Vec<MemoryItem> {
+    parse_memories_json_with_zip(json_content, &std::collections::HashMap::new())
+}
+
+pub fn parse_memories_json_with_zip(
+    json_content: &str,
+    zip_media_map: &std::collections::HashMap<(i64, String), crate::fs::ZipMediaInfo>,
+) -> Vec<MemoryItem> {
     let export: SnapchatExport = match serde_json::from_str(json_content) {
         Ok(e) => e,
         Err(e) => {
@@ -38,65 +45,86 @@ pub fn parse_memories_json(json_content: &str) -> Vec<MemoryItem> {
     let mut image_entries = Vec::new();
 
     for mem in export.saved_media {
-        let link = mem.download_link.or(mem.media_download_url);
-        let link = match link {
-            Some(l) if !l.is_empty() => l,
-            _ => continue,
-        };
-
-        let url = match Url::parse(&link) {
-            Ok(u) => u,
-            Err(_) => continue,
-        };
-
-        // Try to extract ID from multiple sources:
-        // 1. Query params (most common for web download links)
-        // 2. URL path segments (common for direct CDN links)
-        let mut candidate_ids: Vec<String> = Vec::new();
-        
-        // Extract IDs from query parameters in preferred order
-        for key in &["mid", "media_id", "sid"] {
-            if let Some(val) = url.query_pairs().find(|(k, _)| k == *key).map(|(_, v)| v.into_owned()) {
-                if !val.is_empty() && val != "unknown-id" {
-                    let cleaned = val.trim().to_string();
-                    if !candidate_ids.contains(&cleaned) {
-                        candidate_ids.push(cleaned);
-                    }
-                }
-            }
-        }
-
-        // Fallback/Supplement: look for UUID-like segment in path
-        if let Some(mut segments) = url.path_segments() {
-            // SNAPCHAT UUID segments are usually 32-38 chars and contain at least one hyphen
-            if let Some(seg) = segments.find(|s| (s.len() >= 32 && s.len() <= 38) && s.contains('-')) {
-                let cleaned = seg.trim().to_string();
-                if !candidate_ids.contains(&cleaned) {
-                    candidate_ids.push(cleaned);
-                }
-            }
-        }
-
-        if candidate_ids.is_empty() {
-            tracing::debug!(url = %link, "Failed to extract any ID from URL");
-            continue;
-        }
-
-        // The first ID in our prioritized list becomes the primary ID
-        let id = candidate_ids[0].clone();
-
-        let location = normalize_location(mem.location);
-        let media_type = mem.media_type.clone();
         let date_str = mem.date.clone();
+        let media_type = mem.media_type.clone();
 
         let ts = crate::metadata::parse_date_flexible(&date_str)
             .map(|dt| dt.timestamp())
             .unwrap_or(0);
 
+        let link_opt = mem.download_link.clone().or(mem.media_download_url.clone());
+
+        let (link, id, candidate_ids, ext) = if let Some(l) = link_opt.filter(|s| !s.is_empty()) {
+            let url = match Url::parse(&l) {
+                Ok(u) => u,
+                Err(_) => continue,
+            };
+
+            // Try to extract ID from multiple sources:
+            // 1. Query params (most common for web download links)
+            // 2. URL path segments (common for direct CDN links)
+            let mut candidate_ids: Vec<String> = Vec::new();
+            
+            // Extract IDs from query parameters in preferred order
+            for key in &["mid", "media_id", "sid"] {
+                if let Some(val) = url.query_pairs().find(|(k, _)| k == *key).map(|(_, v)| v.into_owned()) {
+                    if !val.is_empty() && val != "unknown-id" {
+                        let cleaned = val.trim().to_string();
+                        if !candidate_ids.contains(&cleaned) {
+                            candidate_ids.push(cleaned);
+                        }
+                    }
+                }
+            }
+
+            // Fallback/Supplement: look for UUID-like segment in path
+            if let Some(mut segments) = url.path_segments() {
+                // SNAPCHAT UUID segments are usually 32-38 chars and contain at least one hyphen
+                if let Some(seg) = segments.find(|s| (s.len() >= 32 && s.len() <= 38) && s.contains('-')) {
+                    let cleaned = seg.trim().to_string();
+                    if !candidate_ids.contains(&cleaned) {
+                        candidate_ids.push(cleaned);
+                    }
+                }
+            }
+
+            if candidate_ids.is_empty() {
+                tracing::debug!(url = %l, "Failed to extract any ID from URL");
+                continue;
+            }
+
+            // The first ID in our prioritized list becomes the primary ID
+            let id = candidate_ids[0].clone();
+            (l, id, candidate_ids, None)
+        } else {
+            // New local-only logic: match against ZIP files using timestamp and media type
+            // Allow +/- 2 seconds tolerance for DOS timestamp rounding.
+            let mut found_info: Option<&crate::fs::ZipMediaInfo> = None;
+            for diff in &[0, -1, 1, -2, 2] {
+                let check_ts = ts + *diff;
+                if let Some(info) = zip_media_map.get(&(check_ts, media_type.clone())) {
+                    found_info = Some(info);
+                    break;
+                }
+            }
+
+            if let Some(info) = found_info {
+                let id = info.id.clone();
+                let fake_url = format!("local://{}", id);
+                let candidate_ids = vec![id.clone()];
+                (fake_url, id, candidate_ids, Some(info.ext.clone()))
+            } else {
+                // Skip if no match is found
+                continue;
+            }
+        };
+
+        let location = normalize_location(mem.location);
+
         if media_type.eq_ignore_ascii_case("Video") {
             video_entries.push(VideoEntry {
                 id,
-                candidate_ids: candidate_ids.clone(),
+                candidate_ids,
                 download_url: link,
                 location,
                 date_str,
@@ -112,7 +140,7 @@ pub fn parse_memories_json(json_content: &str) -> Vec<MemoryItem> {
                 location,
                 state: ProcessingState::Pending,
                 error_message: None,
-                extension: None,
+                extension: ext,
                 has_overlay: false,
                 has_thumbnail: false,
                 media_type: "Image".to_string(),
@@ -283,5 +311,35 @@ mod tests {
         let candidates = item.candidate_ids.unwrap();
         assert!(candidates.contains(&"MID1".to_string()));
         assert!(candidates.contains(&"MID2".to_string()));
+    }
+
+    #[test]
+    fn test_parse_memories_json_with_zip_mapping() {
+        let json = r#"{
+            "Saved Media": [
+                {
+                    "Date": "2026-07-05 13:31:42 UTC",
+                    "Media Type": "Video",
+                    "Location": "Latitude, Longitude: 57.691925, 12.701184",
+                    "Download Link": "",
+                    "Media Download Url": ""
+                }
+            ]
+        }"#;
+
+        let mut map = std::collections::HashMap::new();
+        let ts = crate::metadata::parse_date_flexible("2026-07-05 13:31:42 UTC").unwrap().timestamp();
+        
+        map.insert((ts, "Video".to_string()), crate::fs::ZipMediaInfo {
+            id: "my-recovered-id-123".to_string(),
+            filename: "memories/2026-07-05_my-recovered-id-123-main.mp4".to_string(),
+            ext: "mp4".to_string(),
+        });
+
+        let items = parse_memories_json_with_zip(json, &map);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "my-recovered-id-123");
+        assert_eq!(items[0].download_url, "local://my-recovered-id-123");
+        assert_eq!(items[0].media_type, "Video");
     }
 }
