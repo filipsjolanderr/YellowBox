@@ -28,17 +28,6 @@ pub(crate) async fn process_item_full<R: MemoryRepository + 'static>(
 
     for attempt in 1..=MAX_ATTEMPTS {
         if ctx.is_cancelled.load(Ordering::SeqCst) {
-            let _ = ctx
-                .updates
-                .update_state_and_emit(
-                    msg.item,
-                    ProcessingState::Paused,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await;
             return Ok(());
         }
 
