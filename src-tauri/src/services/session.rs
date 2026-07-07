@@ -109,7 +109,16 @@ impl SessionService {
         paths: Vec<String>,
         state: State<'_, AppState>,
     ) -> Result<()> {
-        let new_paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        let mut new_paths = Vec::new();
+        for p in paths {
+            let path_buf = PathBuf::from(p);
+            let siblings = fs::find_sibling_zips(&path_buf);
+            for sib in siblings {
+                if !new_paths.contains(&sib) {
+                    new_paths.push(sib);
+                }
+            }
+        }
 
         let mut sessions = state.sessions.write().await;
         let session = sessions
